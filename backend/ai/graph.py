@@ -3,6 +3,7 @@ from typing import TypedDict
 
 from ai.agents.router_agent import route_query
 from ai.agents.hr_agent import hr_agent
+from ai.agents.it_agent import it_agent
 
 # 🧠 Define state
 
@@ -24,6 +25,11 @@ def hr_node(state: GraphState):
     response = hr_agent(state["message"], state["db"])
     return {"response": response}
 
+# it node
+def it_node(state):
+    response = it_agent(state["message"], state["db"])
+    return {"response": response}
+
 # 🧠 Build graph
 
 def build_graph():
@@ -32,6 +38,7 @@ def build_graph():
     
     builder.add_node("router", router_node)
     builder.add_node("hr", hr_node)
+    builder.add_node("it", it_node)
     
     # Entry
     builder.set_entry_point("router")
@@ -45,6 +52,7 @@ def build_graph():
         route,
         {
             "hr": "hr",
+            "it": "it",
             "general": "__end__"
         }
     )

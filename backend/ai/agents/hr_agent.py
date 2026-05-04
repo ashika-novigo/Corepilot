@@ -1,7 +1,8 @@
 from app.services.ai_service import extract_intent_and_entities
 from app.services.leave_service import apply_leave, get_leave_history
 import re
-
+from app.rag.retriever import retrieve_docs
+from ai.groq_client import get_llm
 
 def hr_agent(message: str, db):
     result = extract_intent_and_entities(message)
@@ -24,7 +25,7 @@ def hr_agent(message: str, db):
 
     msg_lower = message.lower()
 
-    if intent == "other" and ("leave" in msg_lower or "vacation" in msg_lower):
+    if "apply" in msg_lower or "take leave" in msg_lower:
         intent = "apply_leave"
     
     # ✅ Apply Leave
@@ -42,7 +43,7 @@ def hr_agent(message: str, db):
         return f"✅ Leave applied from {leave.start_date} to {leave.end_date}"
     
     # ✅ Leave History
-    if "history" in message.lower():
+    if "history" in msg_lower or "my leaves" in msg_lower:
         leaves = get_leave_history(db, "Graph_USER")
     
         if not leaves:
@@ -53,6 +54,34 @@ def hr_agent(message: str, db):
             for l in leaves
         ])
     
+    docs = retrieve_docs(message)
+
+    if docs:
+        context = "\n".join(docs)
+
+    llm = get_llm()
+
+    prompt = f"""
+
+    You are an HR assistant.
+
+    Answer the question using ONLY the context below.
+
+    Context:
+    {context}
+
+    Question:
+    {message}
+
+    Give a clear and professional answer.
+    """
+
+    response = llm.invoke(prompt)
+    return response.content
+    
+
+    
+
     # ❌ DO NOT call LLM here
     return "I can help with leave requests. Try: apply leave from YYYY-MM-DD to YYYY-MM-DD"
     

@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from db.database import engine, Base
 from models.leave import LeaveRequest
+from models.ticket import Ticket
+from models.asset_request import AssetRequest
 
 from app.routes import leave  # import routes
 from app.routes import chat

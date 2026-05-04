@@ -53,9 +53,5 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
     return {"reply": response.content}
 
 
-        
-    llm = get_llm()
-    response = llm.invoke(req.message)
-
-    return {"reply": response.content}
+  
 

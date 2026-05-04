@@ -1,0 +1,6 @@
+Leave Policy:
+
+- Employees get 20 paid leaves per year.
+- Sick leave requires approval.
+- Casual leave can be applied without prior approval for 2 days.
+- Leaves beyond 5 days need manager approval.
