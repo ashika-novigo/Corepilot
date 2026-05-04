@@ -23,12 +23,12 @@ def router_node(state: GraphState):
 
 def hr_node(state: GraphState):
     response = hr_agent(state["message"], state["db"])
-    return {"response": response}
+    return {"response": response,  "agent": "hr"}
 
 # it node
 def it_node(state):
     response = it_agent(state["message"], state["db"])
-    return {"response": response}
+    return {"response": response,  "agent": "it"}
 
 # 🧠 Build graph
 

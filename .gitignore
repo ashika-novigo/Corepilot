@@ -11,3 +11,5 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+.next/
+node_modules/

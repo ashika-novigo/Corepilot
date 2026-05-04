@@ -12,23 +12,31 @@ def extract_it_details(message: str):
     llm = get_llm()
 
     prompt = f"""
+You are an IT operations assistant.
 
+Classify the user's message.
 
-    You are an IT assistant.
+Return ONLY valid JSON:
 
-    Extract details from the user message.
+{{
+  "action_type": "create_ticket | asset_request | ticket_status | ticket_update | asset_status | general",
+  "issue_type": "laptop | vpn | outlook | printer | network | software | general",
+  "asset_type": "laptop | monitor | keyboard | mouse | vpn token | software license | null",
+  "priority": "low | medium | high | critical"
+}}
 
-    Return ONLY valid JSON:
+Rules:
+- If something is broken, slow, hanging, not working, unable to access, error, issue, problem → create_ticket
+- If user asks for new hardware/software/access like "need", "request", "want", "provide", "new" → asset_request
+- "my laptop is not working" → create_ticket
+- "I need a new laptop" → asset_request
+- "show ticket status" → ticket_status
+- "mark ticket 1 resolved" → ticket_update
+- "show asset request status" → asset_status
 
-    {{
-    "issue_type": "laptop | vpn | outlook | printer | network | software | general",
-    "priority": "low | medium | high | critical"
-    }}
-
-    Message:
-    {message}
-    """
-
+Message:
+{message}
+"""
 
     response = llm.invoke(prompt)
 
@@ -41,16 +49,19 @@ def extract_it_details(message: str):
         data = json.loads(raw)
 
         return {
+            "action_type": data.get("action_type", "general"),
             "issue_type": data.get("issue_type", "general"),
-            "priority": data.get("priority", "medium")
+            "asset_type": data.get("asset_type"),
+            "priority": data.get("priority", "medium"),
         }
 
     except:
         return {
+            "action_type": "general",
             "issue_type": "general",
-            "priority": "medium"
+            "asset_type": None,
+            "priority": "medium",
         }
-
 
 # 🔁 Rule fallback (safety)
 
@@ -85,6 +96,35 @@ def detect_priority(message: str) -> str:
 
     return "medium"
 
+def apply_rule_fallback(message: str, details: dict):
+    msg = message.lower()
+
+    issue_words = ["not working", "broken", "slow", "hanging", "error", "issue", "problem", "unable"]
+    request_words = ["need", "request", "want", "provide", "new"]
+
+    asset_words = ["laptop", "monitor", "keyboard", "mouse", "vpn token", "software license"]
+    ticket_words = ["laptop", "vpn", "outlook", "email", "printer", "wifi", "network", "software", "system"]
+
+    if details["action_type"] == "general":
+        if any(word in msg for word in issue_words):
+            details["action_type"] = "create_ticket"
+
+        if any(word in msg for word in request_words):
+            details["action_type"] = "asset_request"
+
+    if details["issue_type"] == "general":
+        details["issue_type"] = detect_issue_type(message)
+
+    if not details.get("asset_type") or details.get("asset_type") == "null":
+        for asset in asset_words:
+            if asset in msg:
+                details["asset_type"] = asset
+                break
+
+    if details["priority"] == "medium":
+        details["priority"] = detect_priority(message)
+
+    return details
 
 def extract_ticket_update(message: str):
     msg = message.lower()
@@ -139,8 +179,42 @@ def it_agent(message: str, db):
 
 
 
-        # 🔹 Asset request status/history
-    if "asset" in msg and ("status" in msg or "history" in msg):
+    details = extract_it_details(message)
+    details = apply_rule_fallback(message, details)
+
+    action_type = details["action_type"]
+    issue_type = details["issue_type"]
+    asset_type = details["asset_type"]
+    priority = details["priority"]
+
+    # 🔹 Ticket status
+    if action_type == "ticket_status":
+        tickets = get_user_tickets(db, "AI_USER")
+
+        if not tickets:
+            return "No IT tickets found."
+
+        return "\n".join([
+            f"Ticket #{t.id}: {t.issue_type} → {t.status}"
+            for t in tickets
+        ])
+
+    # 🔹 Ticket update
+    if action_type == "ticket_update":
+        ticket_id, status = extract_ticket_update(message)
+
+        if not ticket_id or not status:
+            return "Please specify ticket ID and status clearly."
+
+        ticket = update_ticket_status(db, ticket_id, status)
+
+        if not ticket:
+            return f"Ticket #{ticket_id} not found."
+
+        return f"✅ Ticket #{ticket.id} updated to {ticket.status}"
+
+    # 🔹 Asset request status
+    if action_type == "asset_status":
         requests = get_asset_requests(db, "AI_USER")
 
         if not requests:
@@ -152,16 +226,7 @@ def it_agent(message: str, db):
         ])
 
     # 🔹 Create asset request
-    asset_keywords = ["monitor", "keyboard", "mouse", "vpn token", "software license", "laptop"]
-
-    if any(asset in msg for asset in asset_keywords):
-        asset_type = "general"
-
-        for asset in asset_keywords:
-            if asset in msg:
-                asset_type = asset
-                break
-
+    if action_type == "asset_request" and asset_type:
         request = create_asset_request(
             db=db,
             user_id="AI_USER",
@@ -178,22 +243,8 @@ def it_agent(message: str, db):
             f"Final Status: {request.final_status}"
         )
 
-    # 🧠 Step 1: AI extraction
-    details = extract_it_details(message)
-
-    issue_type = details["issue_type"]
-    priority = details["priority"]
-
-    # 🔥 Step 2: fallback if AI fails
-    if issue_type == "general":
-        issue_type = detect_issue_type(message)
-
-    if priority == "medium":
-        priority = detect_priority(message)
-
-    # 🔹 Step 3: create ticket
-    if issue_type != "general":
-
+    # 🔹 Create ticket
+    if action_type == "create_ticket" and issue_type != "general":
         ticket, duplicate = create_ticket(
             db=db,
             user_id="AI_USER",

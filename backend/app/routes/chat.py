@@ -44,13 +44,15 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
     # If HR handled it
     if "response" in result:
-        return {"reply": result["response"]}
+        return {"reply": result["response"],
+                "agent": result.get("agent", "general") 
+                } # 👈 ADD THIS
 
     # Otherwise fallback to LLM
     llm = get_llm()
     response = llm.invoke(req.message)
 
-    return {"reply": response.content}
+    return {"reply": response.content, "agent": "general"}
 
 
   
