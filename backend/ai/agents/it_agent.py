@@ -139,7 +139,7 @@ def it_agent(message: str, db):
 
 
 
-    # 🔹 Asset request status/history
+        # 🔹 Asset request status/history
     if "asset" in msg and ("status" in msg or "history" in msg):
         requests = get_asset_requests(db, "AI_USER")
 
@@ -152,7 +152,7 @@ def it_agent(message: str, db):
         ])
 
     # 🔹 Create asset request
-    asset_keywords = ["monitor", "keyboard", "mouse", "vpn token", "software license", "new laptop"]
+    asset_keywords = ["monitor", "keyboard", "mouse", "vpn token", "software license", "laptop"]
 
     if any(asset in msg for asset in asset_keywords):
         asset_type = "general"
