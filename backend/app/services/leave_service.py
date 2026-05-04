@@ -1,6 +1,6 @@
 from models.leave import LeaveRequest
 
-def apply_leave(db, employee_id, start_date, end_date, reason="Applied via AI"):
+def apply_leave(db, employee_id, start_date, end_date, reason="used graph here"):
     new_leave = LeaveRequest(
     employee_id=employee_id,
     start_date=start_date,

@@ -1,5 +1,7 @@
 from app.services.ai_service import extract_intent_and_entities
 from app.services.leave_service import apply_leave, get_leave_history
+import re
+
 
 def hr_agent(message: str, db):
     result = extract_intent_and_entities(message)
@@ -9,8 +11,21 @@ def hr_agent(message: str, db):
     start_date = result.get("start_date")
     end_date = result.get("end_date")
     
+    if start_date is None or end_date is None:
+        dates = re.findall(r"\d{4}-\d{2}-\d{2}", message)
+
+    if len(dates) >= 2:
+        start_date = dates[0]
+        end_date = dates[1]
+
     # 🧠 Debug (keep for now)
     print("HR AGENT:", intent, start_date, end_date)
+    print("EXTRACT RESULT:", result)
+
+    msg_lower = message.lower()
+
+    if intent == "other" and ("leave" in msg_lower or "vacation" in msg_lower):
+        intent = "apply_leave"
     
     # ✅ Apply Leave
     if intent == "apply_leave":
@@ -19,7 +34,7 @@ def hr_agent(message: str, db):
     
         leave = apply_leave(
             db=db,
-            employee_id="AI_USER",
+            employee_id="Graph_USER",
             start_date=start_date,
             end_date=end_date
         )
@@ -28,7 +43,7 @@ def hr_agent(message: str, db):
     
     # ✅ Leave History
     if "history" in message.lower():
-        leaves = get_leave_history(db, "AI_USER")
+        leaves = get_leave_history(db, "Graph_USER")
     
         if not leaves:
             return "No leave history found."
