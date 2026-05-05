@@ -1,12 +1,30 @@
 from ai.groq_client import get_llm
 from app.services.it_service import create_ticket, get_user_tickets
 from app.services.it_service import update_ticket_status
-from app.services.asset_service import create_asset_request, get_asset_requests
+from models.employee import Employee
+from app.services.email_service import send_email
+from app.services.asset_service import (
+    create_asset_request,
+    get_asset_requests,
+    get_pending_asset_requests_for_manager,
+    approve_asset_by_manager,
+    reject_asset_by_manager,
+    get_pending_assets_for_it,
+    approve_asset_by_it,
+    reject_asset_by_it,
+)
 
 import json
 import re
 
+def extract_request_id(message: str):
+    match = re.search(r"\d+", message)
+    if match:
+        return int(match.group())
+    return None
+
 # 🧠 AI extraction
+
 
 def extract_it_details(message: str):
     llm = get_llm()
@@ -150,31 +168,140 @@ def extract_ticket_update(message: str):
 def it_agent(message: str, db, user):
     msg = message.lower()
 
+     # IT Team: view assets waiting for IT approval
+    if "it asset approvals" in msg or "pending it assets" in msg:
+        if user.role not in ["it", "it_team", "admin"]:
+            return "Access denied. Only IT team can view IT asset approvals."
+
+        requests = get_pending_assets_for_it(db)
+
+        if not requests:
+            return "No asset requests pending IT approval."
+
+        return "\n".join([
+            f"Asset Request #{r.id}: {r.asset_type} → Manager: {r.manager_status}, IT: {r.it_status}, Final: {r.final_status}"
+            for r in requests
+        ])
+
+
+    # IT Team: approve asset
+    if "it approve asset" in msg:
+        if user.role not in ["it", "it_team", "admin"]:
+            return "Access denied. Only IT team can approve assets."
+
+        request_id = extract_request_id(message)
+
+        if not request_id:
+            return "Please provide request ID. Example: IT approve asset 5"
+
+        request = approve_asset_by_it(db, request_id)
+
+        if request == "inventory_not_found":
+            return "Asset request rejected because this asset type does not exist in inventory."
+
+        if request == "inventory_unavailable":
+            return "Asset request approved by IT, but inventory is unavailable. Status set to waiting_for_stock."
+
+        if not request:
+            return "Asset request not found or manager approval is still pending."
+
+        return (
+            f"✅ Asset request #{request.id} approved by IT.\n"
+            f"Inventory Status: {request.inventory_status}\n"
+            f"Final Status: {request.final_status}"
+        )
+
+
+    # IT Team: reject asset
+    if "it reject asset" in msg:
+        if user.role not in ["it", "it_team", "admin"]:
+            return "Access denied. Only IT team can reject assets."
+
+        request_id = extract_request_id(message)
+
+        if not request_id:
+            return "Please provide request ID. Example: IT reject asset 5"
+
+        request = reject_asset_by_it(db, request_id)
+
+        if not request:
+            return "Asset request not found or manager approval is still pending."
+
+        return f"❌ Asset request #{request.id} rejected by IT."
+
+
+    # Manager: view pending asset approvals
+    if "pending asset" in msg and "approval" in msg:
+        if user.role not in ["manager", "admin"]:
+            return "Access denied. Only managers can view pending asset approvals."
+
+        requests = get_pending_asset_requests_for_manager(db, user.id)
+
+        if not requests:
+            return "No pending asset approvals found."
+
+        return "\n".join([
+            f"Asset Request #{r.id}: {r.asset_type} → Manager: {r.manager_status}, IT: {r.it_status}, Final: {r.final_status}"
+            for r in requests
+        ])
+
+
+    # Manager: approve asset request
+    if "approve asset" in msg:
+        if user.role not in ["manager", "admin"]:
+            return "Access denied. Only managers can approve asset requests."
+
+        request_id = extract_request_id(message)
+
+        if not request_id:
+            return "Please provide request ID. Example: approve asset 5"
+
+        request = approve_asset_by_manager(db, request_id, user.id)
+
+        if not request:
+            return "Asset request not found, already processed, or not assigned to you."
+
+        return f"✅ Asset request #{request.id} approved by manager. Sent to IT for approval."
+
+
+    # Manager: reject asset request
+    if "reject asset" in msg:
+        if user.role not in ["manager", "admin"]:
+            return "Access denied. Only managers can reject asset requests."
+
+        request_id = extract_request_id(message)
+
+        if not request_id:
+            return "Please provide request ID. Example: reject asset 5"
+
+        request = reject_asset_by_manager(db, request_id, user.id)
+
+        if not request:
+            return "Asset request not found, already processed, or not assigned to you."
+
+        return f"❌ Asset request #{request.id} rejected by manager."
+    
+   
+
+
+
     # 🔹 Ticket status
     if "ticket" in msg and ("status" in msg or "history" in msg or "my tickets" in msg):
         tickets = get_user_tickets(db, user.email)
-
         if not tickets:
             return "No IT tickets found."
-
         return "\n".join([
             f"Ticket #{t.id}: {t.issue_type} → {t.status}"
             for t in tickets
         ])
-
     # 🔥 Ticket update (FIXED)
     if "ticket" in msg and ("resolve" in msg or "close" in msg or "progress" in msg):
-
         ticket_id, status = extract_ticket_update(message)
-
         if not ticket_id or not status:
             return "Please specify ticket ID and status clearly."
-
         ticket = update_ticket_status(db, ticket_id, status)
-
         if not ticket:
             return f"Ticket #{ticket_id} not found."
-
         return f"✅ Ticket #{ticket.id} updated to {ticket.status}"
 
 
@@ -233,7 +360,26 @@ def it_agent(message: str, db, user):
             asset_type=asset_type,
             reason=message
         )
-
+        manager = db.query(Employee).filter(
+            Employee.id == user.manager_id
+                ).first()
+        if manager:
+            send_email(
+                to=manager.email,
+                subject="Asset Request Approval Required",
+                body=(
+                    f"Hello {manager.name},\n\n"
+                    f"{user.name} has requested an asset.\n\n"
+                    f"Request ID: #{request.id}\n"
+                    f"Asset: {request.asset_type}\n"
+                    f"Reason: {message}\n\n"
+                    f"Please login to Corepilot and approve or reject.\n\n"
+                    f"Commands:\n"
+                    f"approve asset {request.id}\n"
+                    f"reject asset {request.id}"
+                )
+            )
+    
         return (
             f"🧾 Asset request created successfully.\n"
             f"Request ID: #{request.id}\n"
@@ -242,7 +388,6 @@ def it_agent(message: str, db, user):
             f"IT Approval: {request.it_status}\n"
             f"Final Status: {request.final_status}"
         )
-
     # 🔹 Create ticket
     if action_type == "create_ticket" and issue_type != "general":
         ticket, duplicate = create_ticket(
