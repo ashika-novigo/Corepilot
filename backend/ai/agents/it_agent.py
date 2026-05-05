@@ -147,12 +147,12 @@ def extract_ticket_update(message: str):
 
     # 🚀 Final IT Agent
 
-def it_agent(message: str, db):
+def it_agent(message: str, db, user):
     msg = message.lower()
 
     # 🔹 Ticket status
     if "ticket" in msg and ("status" in msg or "history" in msg or "my tickets" in msg):
-        tickets = get_user_tickets(db, "AI_USER")
+        tickets = get_user_tickets(db, user.email)
 
         if not tickets:
             return "No IT tickets found."
@@ -189,7 +189,7 @@ def it_agent(message: str, db):
 
     # 🔹 Ticket status
     if action_type == "ticket_status":
-        tickets = get_user_tickets(db, "AI_USER")
+        tickets = get_user_tickets(db, user.email)
 
         if not tickets:
             return "No IT tickets found."
@@ -215,7 +215,7 @@ def it_agent(message: str, db):
 
     # 🔹 Asset request status
     if action_type == "asset_status":
-        requests = get_asset_requests(db, "AI_USER")
+        requests = get_asset_requests(db, user.email)
 
         if not requests:
             return "No asset requests found."
@@ -229,7 +229,7 @@ def it_agent(message: str, db):
     if action_type == "asset_request" and asset_type:
         request = create_asset_request(
             db=db,
-            user_id="AI_USER",
+            user_id=user.email,
             asset_type=asset_type,
             reason=message
         )
@@ -247,7 +247,7 @@ def it_agent(message: str, db):
     if action_type == "create_ticket" and issue_type != "general":
         ticket, duplicate = create_ticket(
             db=db,
-            user_id="AI_USER",
+            user_id=user.email,
             issue_type=issue_type,
             description=message,
             priority=priority

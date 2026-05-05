@@ -15,5 +15,6 @@ class Employee(Base):
     department = Column(String, nullable=True)
 
     manager_id = Column(Integer, nullable=True)
+    password_hash = Column(String, nullable=False)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

@@ -8,26 +8,81 @@ type Message = {
   agent?: string;
 };
 
+type User = {
+  name: string;
+  email: string;
+  role: string;
+};
+
 export default function Home() {
+  const [user, setUser] = useState<User | null>(null);
+  const [email, setEmail] = useState("employee@novigo.com");
+  const [password, setPassword] = useState("password123");
+  const [token, setToken] = useState("");
+
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
       content:
-        "👋 Hi! I’m your Enterprise AI Copilot.\n\nI can help with HR policies, leave history, IT tickets, and asset request status.",
+        "👋 Hi! I’m your  AI Corepilot.\n\nLogin to start using HR and IT workflows.",
+      agent: "system",
     },
   ]);
 
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loginError, setLoginError] = useState("");
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  async function login() {
+    setLoginError("");
+
+    try {
+      const response = await fetch("http://127.0.0.1:8000/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!data.success) {
+        setLoginError(data.message || "Login failed");
+        return;
+      }
+
+      setToken(data.token);
+      setUser({
+        name: data.name,
+        email: data.email,
+        role: data.role,
+      });
+
+      setMessages([
+        {
+          role: "assistant",
+          content: `Welcome ${data.name}! You are logged in as ${data.role}.`,
+          agent: "auth",
+        },
+      ]);
+    } catch {
+      setLoginError("Backend login failed. Check FastAPI server.");
+    }
+  }
+
   async function sendMessage(messageText?: string) {
     const text = messageText || input;
-    if (!text.trim()) return;
+    if (!text.trim() || !token) return;
 
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setInput("");
@@ -36,8 +91,13 @@ export default function Home() {
     try {
       const response = await fetch("http://127.0.0.1:8000/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: text,
+          token,
+        }),
       });
 
       const data = await response.json();
@@ -47,7 +107,7 @@ export default function Home() {
         {
           role: "assistant",
           content: data.reply || "No response received.",
-          agent: data.agent,
+          agent: data.agent || "ai",
         },
       ]);
     } catch {
@@ -56,6 +116,7 @@ export default function Home() {
         {
           role: "assistant",
           content: "⚠️ Backend connection failed. Please check FastAPI server.",
+          agent: "system",
         },
       ]);
     } finally {
@@ -70,18 +131,104 @@ export default function Home() {
     "what is leave policy?",
   ];
 
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-purple-100 via-pink-100 to-white flex items-center justify-center p-6">
+        <div className="w-full max-w-md bg-white/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-white overflow-hidden">
+          <div className="bg-gradient-to-r from-purple-700 via-fuchsia-600 to-pink-500 text-white px-8 py-6">
+            <h1 className="text-2xl font-bold"> Corepilot</h1>
+            <p className="text-sm text-purple-100 mt-1">
+              Secure login for HR & IT workflows
+            </p>
+          </div>
+
+          <div className="p-8 space-y-5">
+            <div>
+              <label className="text-sm font-medium text-gray-700">Email</label>
+              <input
+                className="mt-2 w-full border border-purple-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-pink-400 text-gray-800"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="employee@novigo.com"
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium text-gray-700">
+                Password
+              </label>
+              <input
+                type="password"
+                className="mt-2 w-full border border-purple-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-pink-400 text-gray-800"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="password123"
+              />
+            </div>
+
+            {loginError && (
+              <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl px-4 py-3">
+                {loginError}
+              </div>
+            )}
+
+            <button
+              onClick={login}
+              className="w-full px-7 py-3 rounded-2xl font-semibold text-white bg-gradient-to-r from-purple-700 to-pink-500 hover:opacity-90 transition"
+            >
+              Login
+            </button>
+
+            <div className="text-xs text-gray-500 bg-purple-50 border border-purple-100 rounded-xl p-4">
+              Demo users:
+              <br />
+              employee@novigo.com / password123
+              <br />
+              it@novigo.com / password123
+              <br />
+              ashika.shridhar@novigosolutions.com / password123
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-gradient-to-br from-purple-100 via-pink-100 to-white flex items-center justify-center p-6">
       <div className="w-full max-w-5xl h-[90vh] bg-white/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-white flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-purple-700 via-fuchsia-600 to-pink-500 text-white px-8 py-6">
-          <h1 className="text-2xl font-bold">Enterprise AI Copilot</h1>
-          <p className="text-sm text-purple-100 mt-1">
-            HR • IT • RAG • Multi-Agent Assistant
-          </p>
+        <div className="bg-gradient-to-r from-purple-700 via-fuchsia-600 to-pink-500 text-white px-8 py-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Corepilot</h1>
+            <p className="text-sm text-purple-100 mt-1">
+              HR • IT • RAG • Multi-Agent Assistant
+            </p>
+          </div>
+
+          <div className="text-right">
+            <p className="text-sm font-semibold">{user.name}</p>
+            <p className="text-xs text-purple-100">
+              {user.role.toUpperCase()} • {user.email}
+            </p>
+            <button
+              onClick={() => {
+                setUser(null);
+                setToken("");
+                setMessages([
+                  {
+                    role: "assistant",
+                    content: "Logged out. Please login again.",
+                    agent: "system",
+                  },
+                ]);
+              }}
+              className="mt-2 text-xs bg-white/20 px-3 py-1 rounded-full hover:bg-white/30"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
-        {/* Quick Actions */}
         <div className="px-6 py-4 bg-white border-b flex flex-wrap gap-3">
           {quickActions.map((action) => (
             <button
@@ -95,7 +242,6 @@ export default function Home() {
           ))}
         </div>
 
-        {/* Chat Area */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5 bg-gradient-to-b from-white to-purple-50">
           {messages.map((msg, index) => (
             <div
@@ -112,12 +258,12 @@ export default function Home() {
                 }`}
               >
                 {msg.role === "assistant" && (
-  <div className="mb-2 text-xs font-semibold text-purple-500">
-    {msg.agent?.toUpperCase() || "AI"}
-  </div>
-)}
+                  <div className="mb-2 text-xs font-semibold px-2 py-1 rounded-full inline-block bg-purple-100 text-purple-700">
+                    {(msg.agent || "AI").toUpperCase()}
+                  </div>
+                )}
 
-{msg.content}
+                <div>{msg.content}</div>
               </div>
             </div>
           ))}
@@ -133,7 +279,6 @@ export default function Home() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Input */}
         <div className="bg-white border-t px-6 py-5 flex gap-3">
           <input
             className="flex-1 border border-purple-200 rounded-2xl px-5 py-3 outline-none focus:ring-2 focus:ring-pink-400 text-gray-800"
