@@ -6,6 +6,7 @@ class LeaveCreate(BaseModel):
     start_date: date
     end_date: date
     reason: str | None = None
+    leave_type: str = "casual"
 
 class LeaveResponse(BaseModel):
     id: int
@@ -14,6 +15,8 @@ class LeaveResponse(BaseModel):
     end_date: date
     reason: str | None
     status: str
+    leave_type: str
+    total_days: int
 
 
     class Config:

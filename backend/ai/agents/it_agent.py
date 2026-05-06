@@ -1,21 +1,41 @@
+import json
+import re
+from typing import Any
+
 from ai.groq_client import get_llm
-from app.services.it_service import create_ticket, get_user_tickets
-from app.services.it_service import update_ticket_status
+from ai.state import AgentSessionState
+from app.services.it_service import (
+    create_ticket,
+    get_all_tickets,
+    get_open_tickets,
+    get_tickets_by_status,
+    get_user_tickets,
+    update_ticket_status,
+)
 from models.employee import Employee
 from app.services.email_service import send_email
 from app.services.asset_service import (
     create_asset_request,
     get_asset_requests,
+    get_all_asset_requests,
+    get_asset_requests_for_manager,
     get_pending_asset_requests_for_manager,
     approve_asset_by_manager,
     reject_asset_by_manager,
     get_pending_assets_for_it,
     approve_asset_by_it,
     reject_asset_by_it,
+    cancel_asset_request,
 )
 
-import json
-import re
+
+IT_ROLES = {"it", "it_team", "admin"}
+MANAGER_ROLES = {"manager", "admin"}
+VALID_ASSET_TYPES = ("laptop", "monitor", "keyboard", "mouse", "vpn token", "software license")
+CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "sure", "proceed"}
+CANCEL_WORDS = {"cancel", "no", "nope", "stop", "abort"}
+PENDING_KEY = "it_action"
+
 
 def extract_request_id(message: str):
     match = re.search(r"\d+", message)
@@ -23,7 +43,15 @@ def extract_request_id(message: str):
         return int(match.group())
     return None
 
-# 🧠 AI extraction
+
+def _clean_json(raw: str) -> str:
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?", "", raw, flags=re.IGNORECASE).strip()
+    raw = re.sub(r"```$", "", raw).strip()
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        return match.group(0)
+    return raw
 
 
 def extract_it_details(message: str):
@@ -37,55 +65,61 @@ Classify the user's message.
 Return ONLY valid JSON:
 
 {{
-  "action_type": "create_ticket | asset_request | ticket_status | ticket_update | asset_status | general",
+  "action_type": "ticket_status | all_ticket_status | open_tickets | ticket_update | create_ticket | asset_request | asset_status | cancel_asset_request | manager_pending_asset_approvals | manager_approve_asset | manager_reject_asset | it_pending_asset_approvals | it_approve_asset | it_reject_asset | general",
   "issue_type": "laptop | vpn | outlook | printer | network | software | general",
   "asset_type": "laptop | monitor | keyboard | mouse | vpn token | software license | null",
-  "priority": "low | medium | high | critical"
+  "priority": "low | medium | high | critical",
+  "target_status": "open | in_progress | resolved | closed | rejected | null"
 }}
 
 Rules:
-- If something is broken, slow, hanging, not working, unable to access, error, issue, problem → create_ticket
-- If user asks for new hardware/software/access like "need", "request", "want", "provide", "new" → asset_request
-- "my laptop is not working" → create_ticket
-- "I need a new laptop" → asset_request
-- "show ticket status" → ticket_status
-- "mark ticket 1 resolved" → ticket_update
-- "show asset request status" → asset_status
+- "show ticket status", "show all tickets" -> all_ticket_status for IT/Admin, ticket_status for Employee
+- "what are the open tickets", "pending tickets", "open tickets" -> open_tickets
+- "resolve ticket 5" -> ticket_update with target_status resolved
+- "close ticket 5" -> ticket_update with target_status closed
+- "reject ticket 5" -> ticket_update with target_status rejected
+- Broken, slow, hanging, not working, unable to access, error, issue, problem -> create_ticket
+- New hardware/software/access requests like need, request, want, provide, new -> asset_request
+- "show asset status", "my asset requests" -> asset_status
+- "cancel asset request 8" -> cancel_asset_request
+- "show pending asset approvals" from manager -> manager_pending_asset_approvals
+- "approve asset 8" -> manager_approve_asset
+- "reject asset 8" -> manager_reject_asset
+- "show pending it assets", "show IT asset approvals" -> it_pending_asset_approvals
+- "it approve asset 8" -> it_approve_asset
+- "it reject asset 8" -> it_reject_asset
+- Normal IT tickets do not use manager approval. IT team manages assignment/status/resolution.
 
 Message:
 {message}
 """
 
-    response = llm.invoke(prompt)
-
     try:
+        response = llm.invoke(prompt)
         raw = response.content.strip()
-
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-
-        data = json.loads(raw)
+        data = json.loads(_clean_json(raw))
 
         return {
             "action_type": data.get("action_type", "general"),
             "issue_type": data.get("issue_type", "general"),
             "asset_type": data.get("asset_type"),
             "priority": data.get("priority", "medium"),
+            "target_status": data.get("target_status"),
         }
 
-    except:
+    except Exception as e:
+        print(f"[it_agent] extract_it_details failed: {e}")
         return {
             "action_type": "general",
             "issue_type": "general",
             "asset_type": None,
             "priority": "medium",
+            "target_status": None,
         }
 
-# 🔁 Rule fallback (safety)
 
 def detect_issue_type(message: str) -> str:
     msg = message.lower()
-
 
     if "laptop" in msg or "system" in msg:
         return "laptop"
@@ -106,7 +140,6 @@ def detect_issue_type(message: str) -> str:
 def detect_priority(message: str) -> str:
     msg = message.lower()
 
-
     if "urgent" in msg or "critical" in msg or "blocked" in msg:
         return "critical"
     if "not working" in msg or "unable" in msg:
@@ -114,369 +147,640 @@ def detect_priority(message: str) -> str:
 
     return "medium"
 
-def apply_rule_fallback(message: str, details: dict):
+
+def extract_asset_type(message: str) -> str | None:
     msg = message.lower()
+    for asset_type in VALID_ASSET_TYPES:
+        if asset_type in msg:
+            return asset_type
+    return None
 
-    issue_words = ["not working", "broken", "slow", "hanging", "error", "issue", "problem", "unable"]
-    request_words = ["need", "request", "want", "provide", "new"]
-
-    asset_words = ["laptop", "monitor", "keyboard", "mouse", "vpn token", "software license"]
-    ticket_words = ["laptop", "vpn", "outlook", "email", "printer", "wifi", "network", "software", "system"]
-
-    if details["action_type"] == "general":
-        if any(word in msg for word in issue_words):
-            details["action_type"] = "create_ticket"
-
-        if any(word in msg for word in request_words):
-            details["action_type"] = "asset_request"
-
-    if details["issue_type"] == "general":
-        details["issue_type"] = detect_issue_type(message)
-
-    if not details.get("asset_type") or details.get("asset_type") == "null":
-        for asset in asset_words:
-            if asset in msg:
-                details["asset_type"] = asset
-                break
-
-    if details["priority"] == "medium":
-        details["priority"] = detect_priority(message)
-
-    return details
 
 def extract_ticket_update(message: str):
     msg = message.lower()
+    ticket_id = extract_request_id(message)
 
-    # extract ticket id
-    match = re.search(r"\d+", msg)
-    ticket_id = int(match.group()) if match else None
-
-    # detect status
-    if "resolved" in msg or "close" in msg:
+    if "reject" in msg:
+        status = "rejected"
+    elif "close" in msg or "closed" in msg:
+        status = "closed"
+    elif "resolve" in msg or "resolved" in msg:
         status = "resolved"
     elif "progress" in msg:
         status = "in_progress"
+    elif "open" in msg:
+        status = "open"
     else:
         status = None
 
     return ticket_id, status
 
 
+def _infer_it_details(message: str, user=None) -> dict[str, Any]:
+    msg = message.lower().strip()
+    ticket_id, target_status = extract_ticket_update(message)
+    asset_type = extract_asset_type(message)
 
-    # 🚀 Final IT Agent
+    details = {
+        "action_type": "general",
+        "issue_type": detect_issue_type(message),
+        "asset_type": asset_type,
+        "priority": detect_priority(message),
+        "target_status": target_status,
+        "ticket_id": ticket_id,
+        "request_id": extract_request_id(message),
+        "original_message": message,
+    }
 
-def it_agent(message: str, db, user, history=None):
-    if history is None:
-        history = []
+    if "ticket" in msg:
+        if target_status and ticket_id:
+            details["action_type"] = "ticket_update"
+            return details
+        if "open" in msg or "pending" in msg:
+            details["action_type"] = "open_tickets"
+            return details
+        if "all" in msg:
+            details["action_type"] = "all_ticket_status"
+            return details
+        if "status" in msg or "history" in msg or "my tickets" in msg or "tickets" in msg:
+            details["action_type"] = "ticket_status"
+            return details
 
-    msg = message.lower()
+    if "asset" in msg or asset_type:
+        if "cancel" in msg:
+            details["action_type"] = "cancel_asset_request"
+            return details
+        if "it approve" in msg:
+            details["action_type"] = "it_approve_asset"
+            return details
+        if "it reject" in msg:
+            details["action_type"] = "it_reject_asset"
+            return details
+        if "pending" in msg and "approval" in msg:
+            details["action_type"] = "manager_pending_asset_approvals"
+            return details
+        if "pending it" in msg or "it asset approval" in msg or "it assets" in msg:
+            details["action_type"] = "it_pending_asset_approvals"
+            return details
+        if "approve" in msg:
+            details["action_type"] = "manager_approve_asset"
+            return details
+        if "reject" in msg:
+            details["action_type"] = "manager_reject_asset"
+            return details
+        if "all" in msg and ("status" in msg or "requests" in msg):
+            details["action_type"] = "all_asset_status"
+            return details
+        if "team" in msg or "manager asset" in msg:
+            details["action_type"] = "manager_asset_status"
+            return details
+        if "status" in msg or "requests" in msg:
+            details["action_type"] = "asset_status"
+            return details
+        if any(word in msg for word in ("need", "request", "want", "provide", "new")):
+            details["action_type"] = "asset_request"
+            return details
 
-        # ✅ Context-aware memory handling
-    if msg in ["show status", "status", "track status"]:
+    issue_words = ("not working", "broken", "slow", "hanging", "error", "issue", "problem", "unable")
+    if any(word in msg for word in issue_words):
+        details["action_type"] = "create_ticket"
+        return details
 
-        if history:
-            last_user_message = history[-1]["user"].lower()
-
-            # Previous request was asset request
-            asset_words = [
-                "laptop",
-                "monitor",
-                "keyboard",
-                "mouse",
-                "vpn token",
-                "software license"
-            ]
-
-            if any(asset in last_user_message for asset in asset_words):
-                requests = get_asset_requests(db, user.email)
-
-                if not requests:
-                    return "No asset requests found."
-
-                latest = requests[-1]
-
-                return (
-                    f"Latest Asset Request Status:\n"
-                    f"Request ID: #{latest.id}\n"
-                    f"Asset: {latest.asset_type}\n"
-                    f"Manager Approval: {latest.manager_status}\n"
-                    f"IT Approval: {latest.it_status}\n"
-                    f"Final Status: {latest.final_status}"
-                )
-
-            # Previous request was IT ticket
-            issue_words = [
-                "vpn",
-                "outlook",
-                "printer",
-                "network",
-                "software",
-                "laptop not working"
-            ]
-
-            if any(issue in last_user_message for issue in issue_words):
-                tickets = get_user_tickets(db, user.email)
-
-                if not tickets:
-                    return "No IT tickets found."
-
-                latest = tickets[-1]
-
-                return (
-                    f"Latest Ticket Status:\n"
-                    f"Ticket ID: #{latest.id}\n"
-                    f"Issue Type: {latest.issue_type}\n"
-                    f"Priority: {latest.priority}\n"
-                    f"Status: {latest.status}"
-                )
-
-     # IT Team: view assets waiting for IT approval
-    if "it asset approvals" in msg or "pending it assets" in msg:
-        if user.role not in ["it", "it_team", "admin"]:
-            return "Access denied. Only IT team can view IT asset approvals."
-
-        requests = get_pending_assets_for_it(db)
-
-        if not requests:
-            return "No asset requests pending IT approval."
-
-        return "\n".join([
-            f"Asset Request #{r.id}: {r.asset_type} → Manager: {r.manager_status}, IT: {r.it_status}, Final: {r.final_status}"
-            for r in requests
-        ])
+    return details
 
 
-    # IT Team: approve asset
-    if "it approve asset" in msg:
-        if user.role not in ["it", "it_team", "admin"]:
-            return "Access denied. Only IT team can approve assets."
+def _merge_details(message: str, llm_details: dict[str, Any], user=None) -> dict[str, Any]:
+    details = _infer_it_details(message, user=user)
 
-        request_id = extract_request_id(message)
+    if details["action_type"] == "general":
+        details["action_type"] = llm_details.get("action_type", "general")
 
-        if not request_id:
-            return "Please provide request ID. Example: IT approve asset 5"
+    if details["issue_type"] == "general":
+        details["issue_type"] = llm_details.get("issue_type", "general")
 
+    if not details.get("asset_type"):
+        asset_type = llm_details.get("asset_type")
+        if asset_type and asset_type != "null":
+            details["asset_type"] = asset_type
+
+    if details["priority"] == "medium":
+        details["priority"] = llm_details.get("priority", "medium")
+
+    if not details.get("target_status"):
+        details["target_status"] = llm_details.get("target_status")
+
+    return details
+
+
+def _get_pending(history: list | None = None, session_state: AgentSessionState | None = None):
+    if session_state:
+        return session_state.get_pending(PENDING_KEY)
+
+    for turn in reversed(history or []):
+        if turn.get("role") == "_system" and PENDING_KEY in turn:
+            return turn[PENDING_KEY]
+
+    return None
+
+
+def _set_pending(
+    ctx: dict[str, Any],
+    history: list | None = None,
+    session_state: AgentSessionState | None = None,
+):
+    if session_state:
+        session_state.set_pending(PENDING_KEY, ctx)
+        session_state.set_agent("it")
+        return
+
+    if history is not None:
+        history[:] = [
+            t for t in history
+            if not (t.get("role") == "_system" and PENDING_KEY in t)
+        ]
+        history.append({"role": "_system", PENDING_KEY: ctx})
+
+
+def _clear_pending(history: list | None = None, session_state: AgentSessionState | None = None):
+    if session_state:
+        session_state.clear_pending(PENDING_KEY)
+        return
+
+    if history is not None:
+        history[:] = [
+            t for t in history
+            if not (t.get("role") == "_system" and PENDING_KEY in t)
+        ]
+
+
+def _is_confirm(message: str) -> bool:
+    msg = message.lower().strip()
+    return msg in CONFIRM_WORDS or msg.startswith("confirm ")
+
+
+def _is_cancel(message: str) -> bool:
+    return message.lower().strip() in CANCEL_WORDS
+
+
+def _format_tickets(tickets) -> str:
+    if not tickets:
+        return "No IT tickets found."
+
+    return "\n".join(
+        f"Ticket #{t.id}: {t.issue_type} | User: {t.user_id} | Priority: {t.priority} | Status: {t.status}"
+        for t in tickets
+    )
+
+
+def _format_asset_requests(requests) -> str:
+    if not requests:
+        return "No asset requests found."
+
+    return "\n".join(
+        f"Asset Request #{r.id}: {r.asset_type} | User: {r.user_id} | "
+        f"Manager: {r.manager_status} | IT: {r.it_status} | Final: {r.final_status}"
+        for r in requests
+    )
+
+
+def _set_last_action(
+    session_state: AgentSessionState | None,
+    action: str,
+    status: str = "success",
+    tool_used: str = "it_agent",
+) -> None:
+    if session_state:
+        session_state.metadata["last_action"] = action
+        session_state.metadata["last_status"] = status
+        session_state.metadata["last_tool"] = tool_used
+
+
+def _needs_confirmation(details: dict[str, Any]) -> bool:
+    action_type = details["action_type"]
+    if action_type in {
+        "create_ticket",
+        "asset_request",
+        "cancel_asset_request",
+        "manager_approve_asset",
+        "manager_reject_asset",
+        "it_approve_asset",
+        "it_reject_asset",
+    }:
+        return True
+
+    return action_type == "ticket_update" and details.get("target_status") in {
+        "resolved",
+        "closed",
+        "rejected",
+    }
+
+
+def _precheck_action(details: dict[str, Any], user) -> str | None:
+    action_type = details["action_type"]
+
+    if action_type == "ticket_update" and user.role not in IT_ROLES:
+        return "Access denied. Only IT team or admin can update tickets."
+
+    if action_type in ("manager_approve_asset", "manager_reject_asset") and user.role not in MANAGER_ROLES:
+        return "Access denied. Only managers or admin can approve or reject asset requests."
+
+    if action_type in ("it_approve_asset", "it_reject_asset") and user.role not in IT_ROLES:
+        return "Access denied. Only IT team or admin can approve or reject assets."
+
+    return None
+
+
+def _confirmation_prompt(details: dict[str, Any]) -> str:
+    action_type = details["action_type"]
+
+    if action_type == "create_ticket":
+        return (
+            f"Please confirm: create IT ticket for {details['issue_type']} issue? "
+            "Reply: confirm create ticket"
+        )
+
+    if action_type == "asset_request":
+        asset_type = details.get("asset_type")
+        return (
+            f"Please confirm: create asset request for {asset_type}? "
+            f"Reply: confirm request {asset_type}"
+        )
+
+    if action_type == "cancel_asset_request":
+        return (
+            f"Please confirm: cancel asset request #{details.get('request_id')}? "
+            f"Reply: confirm cancel asset request {details.get('request_id')}"
+        )
+
+    if action_type in ("manager_approve_asset", "manager_reject_asset", "it_approve_asset", "it_reject_asset"):
+        action_word = "approve" if "approve" in action_type else "reject"
+        return (
+            f"Please confirm: {action_word} asset request #{details.get('request_id')}? "
+            f"Reply: confirm {action_word} asset {details.get('request_id')}"
+        )
+
+    if action_type == "ticket_update":
+        status = details.get("target_status")
+        ticket_id = details.get("ticket_id")
+        verb_by_status = {
+            "closed": "close",
+            "resolved": "resolve",
+            "rejected": "reject",
+            "in_progress": "mark in progress",
+            "open": "open",
+        }
+        verb = verb_by_status.get(status, "update")
+        return (
+            f"Please confirm: {verb} ticket #{ticket_id}? "
+            f"Reply: confirm {verb} ticket {ticket_id}"
+        )
+
+    return "Please confirm this action. Reply: confirm"
+
+
+def _execute_ticket_update(details: dict[str, Any], db, user) -> str:
+    if user.role not in IT_ROLES:
+        return "Access denied. Only IT team or admin can update tickets."
+
+    ticket_id = details.get("ticket_id")
+    status = details.get("target_status")
+
+    if not ticket_id or not status:
+        return "Please specify ticket ID and target status clearly."
+
+    try:
+        ticket = update_ticket_status(db, ticket_id, status)
+    except ValueError as e:
+        return str(e)
+
+    if not ticket:
+        return f"Ticket #{ticket_id} not found."
+
+    return f"Ticket #{ticket.id} updated to {ticket.status}"
+
+
+def _execute_create_ticket(details: dict[str, Any], db, user) -> str:
+    if user.role not in {"employee", "manager", "it", "it_team", "admin"}:
+        return "Access denied. You cannot create IT tickets."
+
+    issue_type = details.get("issue_type") or "general"
+    if issue_type == "general":
+        return "Please specify the issue type, such as laptop, vpn, outlook, printer, network, or software."
+
+    ticket, duplicate = create_ticket(
+        db=db,
+        user_id=user.email,
+        issue_type=issue_type,
+        description=details.get("original_message") or "",
+        priority=details.get("priority", "medium"),
+    )
+
+    if duplicate:
+        return (
+            f"You already have an open {duplicate.issue_type} ticket "
+            f"(Ticket #{duplicate.id}). Current status: {duplicate.status}."
+        )
+
+    return (
+        "IT ticket created successfully.\n"
+        f"Ticket ID: #{ticket.id}\n"
+        f"Issue Type: {ticket.issue_type}\n"
+        f"Priority: {ticket.priority}\n"
+        f"Status: {ticket.status}"
+    )
+
+
+def _execute_asset_request(details: dict[str, Any], db, user) -> str:
+    asset_type = details.get("asset_type")
+
+    if not asset_type or asset_type == "null":
+        return "Please specify asset type: laptop, monitor, keyboard, mouse, vpn token, or software license."
+
+    request = create_asset_request(
+        db=db,
+        user_id=user.email,
+        asset_type=asset_type,
+        reason=details.get("original_message"),
+    )
+
+    manager = db.query(Employee).filter(Employee.id == user.manager_id).first()
+
+    if manager:
+        send_email(
+            to=manager.email,
+            subject="Asset Request Approval Required",
+            body=(
+                f"Hello {manager.name},\n\n"
+                f"{user.name} has requested an asset.\n\n"
+                f"Request ID: #{request.id}\n"
+                f"Asset: {request.asset_type}\n"
+                f"Reason: {details.get('original_message')}\n\n"
+                f"Please login to Corepilot and approve or reject.\n\n"
+                f"Commands:\n"
+                f"approve asset {request.id}\n"
+                f"reject asset {request.id}"
+            ),
+        )
+
+    return (
+        "Asset request created successfully.\n"
+        f"Request ID: #{request.id}\n"
+        f"Asset: {request.asset_type}\n"
+        f"Manager Approval: {request.manager_status}\n"
+        f"IT Approval: {request.it_status}\n"
+        f"Final Status: {request.final_status}"
+    )
+
+
+def _execute_asset_action(details: dict[str, Any], db, user) -> str:
+    action_type = details["action_type"]
+    request_id = details.get("request_id")
+
+    if not request_id:
+        return "Please provide request ID."
+
+    if action_type == "cancel_asset_request":
+        request = cancel_asset_request(db, request_id, user.email)
+        if not request:
+            return f"Asset request #{request_id} not found."
+        if request == "not_allowed":
+            return "Only pending asset requests can be cancelled."
+        return f"Asset request #{request.id} cancelled successfully."
+
+    if action_type == "manager_approve_asset":
+        if user.role not in MANAGER_ROLES:
+            return "Access denied. Only managers or admin can approve asset requests."
+        request = approve_asset_by_manager(db, request_id, user.id)
+        if not request:
+            return "Asset request not found, already processed, or not assigned to you."
+        return f"Asset request #{request.id} approved by manager. Sent to IT for approval."
+
+    if action_type == "manager_reject_asset":
+        if user.role not in MANAGER_ROLES:
+            return "Access denied. Only managers or admin can reject asset requests."
+        request = reject_asset_by_manager(db, request_id, user.id)
+        if not request:
+            return "Asset request not found, already processed, or not assigned to you."
+        return f"Asset request #{request.id} rejected by manager."
+
+    if action_type == "it_approve_asset":
+        if user.role not in IT_ROLES:
+            return "Access denied. Only IT team or admin can approve assets."
         request = approve_asset_by_it(db, request_id)
-
         if request == "inventory_not_found":
             return "Asset request rejected because this asset type does not exist in inventory."
-
         if request == "inventory_unavailable":
             return "Asset request approved by IT, but inventory is unavailable. Status set to waiting_for_stock."
-
         if not request:
             return "Asset request not found or manager approval is still pending."
-
         return (
-            f"✅ Asset request #{request.id} approved by IT.\n"
+            f"Asset request #{request.id} approved by IT.\n"
             f"Inventory Status: {request.inventory_status}\n"
             f"Final Status: {request.final_status}"
         )
 
-
-    # IT Team: reject asset
-    if "it reject asset" in msg:
-        if user.role not in ["it", "it_team", "admin"]:
-            return "Access denied. Only IT team can reject assets."
-
-        request_id = extract_request_id(message)
-
-        if not request_id:
-            return "Please provide request ID. Example: IT reject asset 5"
-
+    if action_type == "it_reject_asset":
+        if user.role not in IT_ROLES:
+            return "Access denied. Only IT team or admin can reject assets."
         request = reject_asset_by_it(db, request_id)
-
         if not request:
             return "Asset request not found or manager approval is still pending."
+        return f"Asset request #{request.id} rejected by IT."
 
-        return f"❌ Asset request #{request.id} rejected by IT."
-
-
-    # Manager: view pending asset approvals
-    if "pending asset" in msg and "approval" in msg:
-        if user.role not in ["manager", "admin"]:
-            return "Access denied. Only managers can view pending asset approvals."
-
-        requests = get_pending_asset_requests_for_manager(db, user.id)
-
-        if not requests:
-            return "No pending asset approvals found."
-
-        return "\n".join([
-            f"Asset Request #{r.id}: {r.asset_type} → Manager: {r.manager_status}, IT: {r.it_status}, Final: {r.final_status}"
-            for r in requests
-        ])
+    return "Unsupported asset action."
 
 
-    # Manager: approve asset request
-    if "approve asset" in msg:
-        if user.role not in ["manager", "admin"]:
-            return "Access denied. Only managers can approve asset requests."
-
-        request_id = extract_request_id(message)
-
-        if not request_id:
-            return "Please provide request ID. Example: approve asset 5"
-
-        request = approve_asset_by_manager(db, request_id, user.id)
-
-        if not request:
-            return "Asset request not found, already processed, or not assigned to you."
-
-        return f"✅ Asset request #{request.id} approved by manager. Sent to IT for approval."
-
-
-    # Manager: reject asset request
-    if "reject asset" in msg:
-        if user.role not in ["manager", "admin"]:
-            return "Access denied. Only managers can reject asset requests."
-
-        request_id = extract_request_id(message)
-
-        if not request_id:
-            return "Please provide request ID. Example: reject asset 5"
-
-        request = reject_asset_by_manager(db, request_id, user.id)
-
-        if not request:
-            return "Asset request not found, already processed, or not assigned to you."
-
-        return f"❌ Asset request #{request.id} rejected by manager."
-    
-   
-
-
-
-    # 🔹 Ticket status
-    if "ticket" in msg and ("status" in msg or "history" in msg or "my tickets" in msg):
-        tickets = get_user_tickets(db, user.email)
-        if not tickets:
-            return "No IT tickets found."
-        return "\n".join([
-            f"Ticket #{t.id}: {t.issue_type} → {t.status}"
-            for t in tickets
-        ])
-    # 🔥 Ticket update (FIXED)
-    if "ticket" in msg and ("resolve" in msg or "close" in msg or "progress" in msg):
-        ticket_id, status = extract_ticket_update(message)
-        if not ticket_id or not status:
-            return "Please specify ticket ID and status clearly."
-        ticket = update_ticket_status(db, ticket_id, status)
-        if not ticket:
-            return f"Ticket #{ticket_id} not found."
-        return f"✅ Ticket #{ticket.id} updated to {ticket.status}"
-
-
-
-    details = extract_it_details(message)
-    details = apply_rule_fallback(message, details)
-
+def _log_action_name(details: dict[str, Any]) -> str:
     action_type = details["action_type"]
-    issue_type = details["issue_type"]
-    asset_type = details["asset_type"]
-    priority = details["priority"]
+    target_status = details.get("target_status")
 
-    # 🔹 Ticket status
-    if action_type == "ticket_status":
-        tickets = get_user_tickets(db, user.email)
-
-        if not tickets:
-            return "No IT tickets found."
-
-        return "\n".join([
-            f"Ticket #{t.id}: {t.issue_type} → {t.status}"
-            for t in tickets
-        ])
-
-    # 🔹 Ticket update
+    if action_type == "create_ticket":
+        return "ticket_created"
+    if action_type == "asset_request":
+        return "asset_requested"
     if action_type == "ticket_update":
-        ticket_id, status = extract_ticket_update(message)
+        if target_status == "rejected":
+            return "ticket_rejected"
+        if target_status in ("resolved", "closed"):
+            return "ticket_resolved"
+        return "ticket_updated"
+    if action_type == "cancel_asset_request":
+        return "asset_cancelled"
+    if action_type == "manager_approve_asset":
+        return "asset_manager_approved"
+    if action_type == "manager_reject_asset":
+        return "asset_rejected"
+    if action_type == "it_approve_asset":
+        return "asset_it_approved"
+    if action_type == "it_reject_asset":
+        return "asset_rejected"
 
-        if not ticket_id or not status:
-            return "Please specify ticket ID and status clearly."
+    return action_type
 
-        ticket = update_ticket_status(db, ticket_id, status)
 
-        if not ticket:
-            return f"Ticket #{ticket_id} not found."
+def _status_from_response(response: str) -> str:
+    if response.startswith("Access denied"):
+        return "access_denied"
+    if "not found" in response.lower() or "unsupported" in response.lower():
+        return "failed"
+    return "success"
 
-        return f"✅ Ticket #{ticket.id} updated to {ticket.status}"
 
-    # 🔹 Asset request status
+def _execute_confirmed(
+    details: dict[str, Any],
+    db,
+    user,
+    session_state: AgentSessionState | None = None,
+) -> str:
+    action_type = details["action_type"]
+
+    if action_type == "create_ticket":
+        response = _execute_create_ticket(details, db, user)
+    elif action_type == "asset_request":
+        response = _execute_asset_request(details, db, user)
+    elif action_type == "ticket_update":
+        response = _execute_ticket_update(details, db, user)
+    elif action_type in {
+        "cancel_asset_request",
+        "manager_approve_asset",
+        "manager_reject_asset",
+        "it_approve_asset",
+        "it_reject_asset",
+    }:
+        response = _execute_asset_action(details, db, user)
+    else:
+        response = "Unsupported confirmed action."
+
+    _set_last_action(
+        session_state,
+        _log_action_name(details),
+        _status_from_response(response),
+    )
+    return response
+
+
+def _handle_read_action(details: dict[str, Any], db, user) -> str | None:
+    action_type = details["action_type"]
+
+    if action_type in ("ticket_status", "all_ticket_status"):
+        if user.role in IT_ROLES:
+            return _format_tickets(get_all_tickets(db))
+        return _format_tickets(get_user_tickets(db, user.email))
+
+    if action_type == "open_tickets":
+        if user.role in IT_ROLES:
+            return _format_tickets(get_open_tickets(db))
+        tickets = [
+            t for t in get_user_tickets(db, user.email)
+            if t.status in ("open", "in_progress")
+        ]
+        return _format_tickets(tickets)
+
     if action_type == "asset_status":
-        requests = get_asset_requests(db, user.email)
+        return _format_asset_requests(get_asset_requests(db, user.email))
 
-        if not requests:
-            return "No asset requests found."
+    if action_type == "manager_pending_asset_approvals":
+        if user.role not in MANAGER_ROLES:
+            return "Access denied. Only managers or admin can view pending asset approvals."
+        return _format_asset_requests(get_pending_asset_requests_for_manager(db, user.id))
 
-        return "\n".join([
-            f"Asset Request #{r.id}: {r.asset_type} → {r.final_status}"
-            for r in requests
-        ])
+    if action_type == "it_pending_asset_approvals":
+        if user.role not in IT_ROLES:
+            return "Access denied. Only IT team or admin can view IT asset approvals."
+        return _format_asset_requests(get_pending_assets_for_it(db))
 
-    # 🔹 Create asset request
-    if action_type == "asset_request" and asset_type:
-        request = create_asset_request(
-            db=db,
-            user_id=user.email,
-            asset_type=asset_type,
-            reason=message
+    if action_type == "all_asset_status":
+        if user.role != "admin":
+            return "Access denied. Only admin can view all asset requests."
+        return _format_asset_requests(get_all_asset_requests(db))
+
+    if action_type == "manager_asset_status":
+        if user.role not in MANAGER_ROLES:
+            return "Access denied. Only managers or admin can view team asset requests."
+        return _format_asset_requests(get_asset_requests_for_manager(db, user.id))
+
+    return None
+
+
+def it_agent(
+    message: str,
+    db,
+    user,
+    history=None,
+    session_state: AgentSessionState | None = None,
+):
+    if session_state:
+        history = session_state.history
+        session_state.set_agent("it")
+
+    return _it_process(message, db, user, history or [], session_state=session_state)
+
+
+def _it_process(
+    message: str,
+    db,
+    user,
+    history: list,
+    session_state: AgentSessionState | None = None,
+) -> str:
+    pending = _get_pending(history, session_state=session_state)
+
+    if pending:
+        if _is_cancel(message):
+            _clear_pending(history, session_state=session_state)
+            return "IT action cancelled."
+
+        if _is_confirm(message):
+            _clear_pending(history, session_state=session_state)
+            return _execute_confirmed(pending, db, user, session_state=session_state)
+
+        return _confirmation_prompt(pending)
+
+    details = _infer_it_details(message, user=user)
+    if details["action_type"] == "general":
+        llm_details = extract_it_details(message)
+        details = _merge_details(message, llm_details, user=user)
+
+    read_response = _handle_read_action(details, db, user)
+    if read_response is not None:
+        return read_response
+
+    if details["action_type"] == "asset_request" and not details.get("asset_type"):
+        return "Please specify asset type: laptop, monitor, keyboard, mouse, vpn token, or software license."
+
+    precheck_error = _precheck_action(details, user)
+    if precheck_error:
+        _set_last_action(session_state, "access_denied", "access_denied")
+        return precheck_error
+
+    if _needs_confirmation(details):
+        _set_pending(details, history=history, session_state=session_state)
+        return _confirmation_prompt(details)
+
+    if details["action_type"] == "ticket_update":
+        response = _execute_ticket_update(details, db, user)
+        _set_last_action(
+            session_state,
+            _log_action_name(details),
+            _status_from_response(response),
         )
-        manager = db.query(Employee).filter(
-            Employee.id == user.manager_id
-                ).first()
-        if manager:
-            send_email(
-                to=manager.email,
-                subject="Asset Request Approval Required",
-                body=(
-                    f"Hello {manager.name},\n\n"
-                    f"{user.name} has requested an asset.\n\n"
-                    f"Request ID: #{request.id}\n"
-                    f"Asset: {request.asset_type}\n"
-                    f"Reason: {message}\n\n"
-                    f"Please login to Corepilot and approve or reject.\n\n"
-                    f"Commands:\n"
-                    f"approve asset {request.id}\n"
-                    f"reject asset {request.id}"
-                )
-            )
-    
-        return (
-            f"🧾 Asset request created successfully.\n"
-            f"Request ID: #{request.id}\n"
-            f"Asset: {request.asset_type}\n"
-            f"Manager Approval: {request.manager_status}\n"
-            f"IT Approval: {request.it_status}\n"
-            f"Final Status: {request.final_status}"
-        )
-    # 🔹 Create ticket
-    if action_type == "create_ticket" and issue_type != "general":
-        ticket, duplicate = create_ticket(
-            db=db,
-            user_id=user.email,
-            issue_type=issue_type,
-            description=message,
-            priority=priority
-        )
+        return response
 
-        if duplicate:
-            return (
-                f"You already have an open {duplicate.issue_type} ticket "
-                f"(Ticket #{duplicate.id}). Current status: {duplicate.status}."
-            )
-
-        return (
-            f"🛠️ IT ticket created successfully.\n"
-            f"Ticket ID: #{ticket.id}\n"
-            f"Issue Type: {ticket.issue_type}\n"
-            f"Priority: {ticket.priority}\n"
-            f"Status: {ticket.status}"
+    if details["action_type"] in {
+        "cancel_asset_request",
+        "manager_approve_asset",
+        "manager_reject_asset",
+        "it_approve_asset",
+        "it_reject_asset",
+    }:
+        response = _execute_asset_action(details, db, user)
+        _set_last_action(
+            session_state,
+            _log_action_name(details),
+            _status_from_response(response),
         )
-    
-    # 🤖 Step 4: fallback LLM
+        return response
+
     llm = get_llm()
     response = llm.invoke(f"Help with this IT support issue: {message}")
-
     return response.content
-

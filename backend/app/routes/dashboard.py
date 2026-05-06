@@ -7,8 +7,10 @@ from models.ticket import Ticket
 from models.asset_request import AssetRequest
 from models.inventory import Inventory
 from models.employee import Employee
+from app.services.log_service import get_logs
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+admin_router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
 def get_db():
@@ -77,7 +79,7 @@ def dashboard_tickets(email: str, role: str, db: Session = Depends(get_db)):
     ).first()
 
     if role == "employee":
-        query = query.filter(Ticket.user_id ==user.id)
+        query = query.filter(Ticket.user_id == user.email)
 
     tickets = query.all()
 
@@ -102,7 +104,7 @@ def dashboard_assets(email: str, role: str, db: Session = Depends(get_db)):
     ).first()
 
     if role == "employee":
-        query = query.filter(AssetRequest.user_id == user.id)
+        query = query.filter(AssetRequest.user_id == user.email)
 
     assets = query.all()
 
@@ -136,5 +138,57 @@ def dashboard_inventory(db: Session = Depends(get_db)):
         }
         for i in items
     ]
+
+
+def _log_rows(email: str, role: str, db: Session):
+    if role != "admin":
+        return {"detail": "Access denied. Only admin can view logs."}
+
+    return [
+        {
+            "id": log.id,
+            "user_id": log.user_id,
+            "user_email": log.user_email,
+            "user_role": log.user_role,
+            "agent": log.agent,
+            "action": log.action,
+            "tool_used": log.tool_used,
+            "status": log.status,
+            "message": log.message,
+            "response": log.response,
+            "created_at": str(log.created_at) if log.created_at else "",
+        }
+        for log in get_logs(db)
+    ]
+
+
+@router.get("/logs")
+def dashboard_logs(email: str, role: str, db: Session = Depends(get_db)):
+    return _log_rows(email, role, db)
+
+
+@router.get("/employees")
+def dashboard_employees(email: str, role: str, db: Session = Depends(get_db)):
+    if role != "admin":
+        return {"detail": "Access denied. Only admin can view all employees."}
+
+    employees = db.query(Employee).all()
+    return [
+        {
+            "id": e.id,
+            "name": e.name,
+            "email": e.email,
+            "role": e.role,
+            "department": e.department,
+            "manager_id": e.manager_id,
+            "created_at": str(e.created_at) if e.created_at else "",
+        }
+        for e in employees
+    ]
+
+
+@admin_router.get("/logs")
+def admin_logs(email: str, role: str, db: Session = Depends(get_db)):
+    return _log_rows(email, role, db)
 
 

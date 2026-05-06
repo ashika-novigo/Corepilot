@@ -1,7 +1,10 @@
+from datetime import datetime, timezone
+
 from models.ticket import Ticket
 
 
 OPEN_STATUSES = ["open", "in_progress"]
+ALLOWED_TICKET_STATUSES = ["open", "in_progress", "resolved", "closed", "rejected"]
 
 
 def check_duplicate_ticket(db, user_id: str, issue_type: str):
@@ -45,7 +48,26 @@ def get_user_tickets(db, user_id: str):
     ).all()
 
 
+def get_all_tickets(db):
+    return db.query(Ticket).all()
+
+
+def get_open_tickets(db):
+    return db.query(Ticket).filter(
+        Ticket.status.in_(OPEN_STATUSES)
+    ).all()
+
+
+def get_tickets_by_status(db, status: str):
+    return db.query(Ticket).filter(
+        Ticket.status == status
+    ).all()
+
+
 def update_ticket_status(db, ticket_id: int, status: str):
+    if status not in ALLOWED_TICKET_STATUSES:
+        raise ValueError(f"Unsupported ticket status: {status}")
+
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
 
 
@@ -53,8 +75,11 @@ def update_ticket_status(db, ticket_id: int, status: str):
         return None
 
     ticket.status = status
+    ticket.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(ticket)
 
     return ticket
+
+
 

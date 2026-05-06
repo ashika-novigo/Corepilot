@@ -32,26 +32,34 @@ def get_asset_requests(db, user_id: str):
 def get_pending_asset_requests_for_manager(db, manager_id):
     from models.employee import Employee
 
-    return db.query(AssetRequest).join(
+    manager = db.query(Employee).filter(Employee.id == manager_id).first()
+    query = db.query(AssetRequest).join(
         Employee,
         AssetRequest.user_id == Employee.email
-    ).filter(
-        Employee.manager_id == manager_id,
-        AssetRequest.manager_status == "pending"
-    ).all()
+    ).filter(AssetRequest.manager_status == "pending")
+
+    if manager and manager.role == "admin":
+        return query.all()
+
+    return query.filter(Employee.manager_id == manager_id).all()
 
 
 def approve_asset_by_manager(db, request_id, manager_id):
     from models.employee import Employee
 
-    request = db.query(AssetRequest).join(
+    manager = db.query(Employee).filter(Employee.id == manager_id).first()
+    query = db.query(AssetRequest).join(
         Employee,
         AssetRequest.user_id == Employee.email
     ).filter(
         AssetRequest.id == request_id,
-        Employee.manager_id == manager_id,
         AssetRequest.manager_status == "pending"
-    ).first()
+    )
+
+    if not (manager and manager.role == "admin"):
+        query = query.filter(Employee.manager_id == manager_id)
+
+    request = query.first()
 
     if not request:
         return None
@@ -84,14 +92,19 @@ def approve_asset_by_manager(db, request_id, manager_id):
 def reject_asset_by_manager(db, request_id, manager_id):
     from models.employee import Employee
 
-    request = db.query(AssetRequest).join(
+    manager = db.query(Employee).filter(Employee.id == manager_id).first()
+    query = db.query(AssetRequest).join(
         Employee,
         AssetRequest.user_id == Employee.email
     ).filter(
         AssetRequest.id == request_id,
-        Employee.manager_id == manager_id,
         AssetRequest.manager_status == "pending"
-    ).first()
+    )
+
+    if not (manager and manager.role == "admin"):
+        query = query.filter(Employee.manager_id == manager_id)
+
+    request = query.first()
 
     if not request:
         return None
@@ -183,6 +196,45 @@ def reject_asset_by_it(db, request_id):
 
     request.it_status = "rejected"
     request.final_status = "rejected"
+
+    db.commit()
+    db.refresh(request)
+
+    return request
+
+def get_all_asset_requests(db):
+    return db.query(AssetRequest).all()
+
+
+def get_asset_requests_for_manager(db, manager_id):
+    manager = db.query(Employee).filter(Employee.id == manager_id).first()
+    query = db.query(AssetRequest).join(
+        Employee,
+        AssetRequest.user_id == Employee.email
+    )
+
+    if manager and manager.role == "admin":
+        return query.all()
+
+    return query.filter(Employee.manager_id == manager_id).all()
+
+
+def cancel_asset_request(db, request_id, user_email):
+    request = db.query(AssetRequest).filter(
+        AssetRequest.id == request_id,
+        AssetRequest.user_id == user_email
+    ).first()
+
+    if not request:
+        return None
+
+    if request.final_status not in ["pending", "pending_it_approval"]:
+        return "not_allowed"
+
+    request.manager_status = "cancelled"
+    request.it_status = "cancelled"
+    request.inventory_status = "cancelled"
+    request.final_status = "cancelled"
 
     db.commit()
     db.refresh(request)

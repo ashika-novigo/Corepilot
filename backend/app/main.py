@@ -3,6 +3,8 @@ from db.database import engine, Base
 from models.leave import LeaveRequest
 from models.ticket import Ticket
 from models.asset_request import AssetRequest
+from models.leave_balance import LeaveBalance
+from models.system_log import SystemLog
 from fastapi.middleware.cors import CORSMiddleware
 from models.employee import Employee
 from app.routes import leave  # import routes
@@ -27,3 +29,4 @@ Base.metadata.create_all(bind=engine)
 app.include_router(leave.router)
 app.include_router(chat.router)
 app.include_router(dashboard.router)
+app.include_router(dashboard.admin_router)
