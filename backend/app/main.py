@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from models.employee import Employee
 from app.routes import leave  # import routes
 from app.routes import chat
+from app.routes import dashboard
 
 app = FastAPI()
 app.add_middleware(
@@ -25,3 +26,4 @@ Base.metadata.create_all(bind=engine)
 
 app.include_router(leave.router)
 app.include_router(chat.router)
+app.include_router(dashboard.router)

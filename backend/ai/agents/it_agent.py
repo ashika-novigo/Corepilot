@@ -165,8 +165,70 @@ def extract_ticket_update(message: str):
 
     # 🚀 Final IT Agent
 
-def it_agent(message: str, db, user):
+def it_agent(message: str, db, user, history=None):
+    if history is None:
+        history = []
+
     msg = message.lower()
+
+        # ✅ Context-aware memory handling
+    if msg in ["show status", "status", "track status"]:
+
+        if history:
+            last_user_message = history[-1]["user"].lower()
+
+            # Previous request was asset request
+            asset_words = [
+                "laptop",
+                "monitor",
+                "keyboard",
+                "mouse",
+                "vpn token",
+                "software license"
+            ]
+
+            if any(asset in last_user_message for asset in asset_words):
+                requests = get_asset_requests(db, user.email)
+
+                if not requests:
+                    return "No asset requests found."
+
+                latest = requests[-1]
+
+                return (
+                    f"Latest Asset Request Status:\n"
+                    f"Request ID: #{latest.id}\n"
+                    f"Asset: {latest.asset_type}\n"
+                    f"Manager Approval: {latest.manager_status}\n"
+                    f"IT Approval: {latest.it_status}\n"
+                    f"Final Status: {latest.final_status}"
+                )
+
+            # Previous request was IT ticket
+            issue_words = [
+                "vpn",
+                "outlook",
+                "printer",
+                "network",
+                "software",
+                "laptop not working"
+            ]
+
+            if any(issue in last_user_message for issue in issue_words):
+                tickets = get_user_tickets(db, user.email)
+
+                if not tickets:
+                    return "No IT tickets found."
+
+                latest = tickets[-1]
+
+                return (
+                    f"Latest Ticket Status:\n"
+                    f"Ticket ID: #{latest.id}\n"
+                    f"Issue Type: {latest.issue_type}\n"
+                    f"Priority: {latest.priority}\n"
+                    f"Status: {latest.status}"
+                )
 
      # IT Team: view assets waiting for IT approval
     if "it asset approvals" in msg or "pending it assets" in msg:

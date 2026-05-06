@@ -13,6 +13,7 @@ class GraphState(TypedDict):
     response: str
     db: object
     user:object
+    history: list
 
 # 🧠 Router node
 
@@ -23,12 +24,12 @@ def router_node(state: GraphState):
 # 🧠 HR node
 
 def hr_node(state: GraphState):
-    response = hr_agent(state["message"], state["db"],state["user"])
+    response = hr_agent(state["message"], state["db"],state["user"],state.get("history", []))
     return {"response": response,  "agent": "hr"}
 
 # it node
 def it_node(state):
-    response = it_agent(state["message"], state["db"],state["user"])
+    response = it_agent(state["message"], state["db"],state["user"],state.get("history", []))
     return {"response": response,  "agent": "it"}
 
 # 🧠 Build graph

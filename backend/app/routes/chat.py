@@ -17,6 +17,7 @@ from ai.graph import build_graph
 
 router = APIRouter()
 graph = build_graph()
+session_memory = {}
 
 
 def get_db():
@@ -88,8 +89,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
     if not payload:
         return {
-            "reply": "Invalid or expired token. Please login again.",
-            "agent": "auth"
+            "reply": "Invalid or expired token. Please login again."
         }
 
     user = db.query(Employee).filter(
@@ -98,28 +98,56 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
 
     if not user:
         return {
-            "reply": "User not found.",
-            "agent": "auth"
+            "reply": "User not found."
         }
 
+    # ✅ Get session memory for this logged-in user
+    user_key = str(user.id)
+
+    if user_key not in session_memory:
+        session_memory[user_key] = []
+
+    history = session_memory[user_key]
+
+    # ✅ Send history into LangGraph
     result = graph.invoke({
-    "message": req.message,
-    "db": db,
-    "user": user
+        "message": req.message,
+        "db": db,
+        "user": user,
+        "history": history
+    })
+
+    # ✅ If agent handled it, save chat to memory
+    if "response" in result:
+        reply = result["response"]
+
+        history.append({
+            "user": req.message,
+            "assistant": reply
         })
 
-    # If HR handled it
-    if "response" in result:
-        return {"reply": result["response"],
-                "agent": result.get("agent", "general") 
-                } # 👈 ADD THIS
+        # keep only last 10 chats
+        session_memory[user_key] = history[-10:]
 
-    # Otherwise fallback to LLM
+        return {
+            "reply": reply
+        }
+
+    # ✅ Otherwise fallback to LLM
     llm = get_llm()
     response = llm.invoke(req.message)
+    reply = response.content
 
-    return {"reply": response.content, "agent": "general"}
+    history.append({
+        "user": req.message,
+        "assistant": reply
+    })
 
+    session_memory[user_key] = history[-10:]
+
+    return {
+        "reply": reply
+    }
 
   
 

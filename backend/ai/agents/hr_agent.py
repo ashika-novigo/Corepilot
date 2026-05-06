@@ -27,8 +27,9 @@ def extract_leave_id(message: str):
 
 
 
-def hr_agent(message: str, db, user):
-    msg_lower = message.lower()
+def hr_agent(message: str, db, user, history=None):
+    if history is None:
+        history = []
 
 # Manager: view pending approvals
     if "pending" in msg_lower and "approval" in msg_lower:
