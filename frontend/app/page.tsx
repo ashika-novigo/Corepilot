@@ -28,11 +28,11 @@ type AssetReq = {
   emp: string;
   asset: string;
   reason: string;
-  manager_status: string;
-  it_status: string;
-  inventory_status: string;
-  final_status: string;
   status?: string;
+  manager_status?: string;
+  it_status?: string;
+  inventory_status?: string;
+  final_status?: string;
   created: string;
 };
 type InventoryItem = { id:number; item:string; total:number; available:number; reserved:number; };
@@ -49,7 +49,6 @@ const NAV_ITEMS: NavItem[] = [
   { id:"tickets",   icon:"🎫", label:"IT Tickets",    roles:["employee","manager","it","admin"] },
   { id:"assets",    icon:"💼", label:"Assets",        roles:["employee","manager","it","admin"] },
   { id:"approvals", icon:"✓",  label:"Approvals",     roles:["manager","hr","it","admin"] },
-  { id:"analytics", icon:"◈",  label:"Analytics",     roles:["hr","admin"] },
   { id:"logs",      icon:"⌬",  label:"Logs & Traces", roles:["admin","it"] },
 ];
 
@@ -222,6 +221,7 @@ function StatusBadge({ status }: { status: string }) {
   const cls: Record<string,string> = {
     pending:     "cp-status-pending",
     approved:    "cp-status-approved",
+    fulfilled:   "cp-status-approved",
     rejected:    "cp-status-rejected",
     open:        "cp-status-open",
     "in-progress": "cp-status-in-progress",
@@ -249,11 +249,11 @@ function AssetPipeline({ a }: { a: AssetReq }) {
   }
   return (
     <div className="cp-pipeline">
-      <span className={`cp-pipe-step ${cls(a.manager_status)}`}>Mgr</span>
+      <span className={`cp-pipe-step ${cls(a.manager_status || "pending")}`}>Mgr</span>
       <span className="cp-pipe-arrow">→</span>
-      <span className={`cp-pipe-step ${cls(a.it_status)}`}>IT</span>
+      <span className={`cp-pipe-step ${cls(a.it_status || "pending")}`}>IT</span>
       <span className="cp-pipe-arrow">→</span>
-      <span className={`cp-pipe-step ${cls(a.inventory_status)}`}>Inv</span>
+      <span className={`cp-pipe-step ${cls(a.inventory_status || "pending")}`}>Inv</span>
     </div>
   );
 }
@@ -625,6 +625,19 @@ function AssetsSection({ user, assets, inventory, onChat }: {
                 <div style={{ fontFamily:"'Syne',sans-serif", fontSize:"10.5px", color:"rgba(111,159,156,0.5)", marginTop:"2px" }}>{a.emp} · {a.reason}</div>
                 {/* Show 3-stage pipeline instead of single status */}
                 <div style={{ marginTop:"5px" }}><AssetPipeline a={a}/></div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:"8px", marginTop:"9px", alignItems:"center" }}>
+                  {[
+                    ["Manager", a.manager_status || "pending"],
+                    ["IT", a.it_status || "pending"],
+                    ["Inventory", a.inventory_status || "pending"],
+                    ["Final", a.final_status || a.status || "pending"],
+                  ].map(([label, status]) => (
+                    <div key={label} style={{ display:"inline-flex", alignItems:"center", gap:"6px" }}>
+                      <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"9.5px", fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", color:"rgba(111,159,156,0.55)" }}>{label}:</span>
+                      <StatusBadge status={status}/>
+                    </div>
+                  ))}
+                </div>
               </div>
               <div style={{ display:"flex", alignItems:"center", gap:"8px", flexShrink:0 }}>
                 {(role==="manager"||role==="it"||role==="admin")&&["pending","pending_it_approval"].includes(a.final_status || a.status || "")&&(
@@ -727,36 +740,6 @@ function ApprovalsSection({ user, leave, assets, tickets, onChat }: {
   );
 }
 
-function AnalyticsSection({ leave }: { leave:LvReq[] }) {
-  const byType = leave.reduce((a,l)=>({...a,[l.type]:(a[l.type as keyof typeof a]||0)+1}),{} as Record<string,number>);
-  const totalDays = leave.filter(l=>l.status==="approved").reduce((s,l)=>s+l.days,0);
-  const approvalRate = leave.length > 0 ? Math.round((leave.filter(l=>l.status==="approved").length/leave.length)*100) : 0;
-  return (
-    <div className="cp-slide-in">
-      <SectionHeader title="Analytics" sub="Leave trends · HR insights" />
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:"12px", marginBottom:"20px" }}>
-        <StatCard icon="📊" label="Total Requests" value={leave.length} color="#E2D8A5"/>
-        <StatCard icon="✓"  label="Approved Days"  value={totalDays} color="#6F9F9C"/>
-        <StatCard icon="⚡" label="Approval Rate"  value={`${approvalRate}%`} color="#E1A36F"/>
-        <StatCard icon="⏳" label="Pending"        value={leave.filter(l=>l.status==="pending").length} color="#DEC484"/>
-      </div>
-      <div className="cp-card" style={{ padding:"20px" }}>
-        <div style={{ fontFamily:"'Syne',sans-serif", fontSize:"10.5px", fontWeight:700, letterSpacing:"0.14em", textTransform:"uppercase", color:"rgba(111,159,156,0.6)", marginBottom:"14px" }}>Leave by Type</div>
-        {Object.entries(byType).map(([type,count])=>(
-          <div key={type} style={{ marginBottom:"12px" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"5px" }}>
-              <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"12px", color:"rgba(226,216,165,0.8)" }}>{type}</span>
-              <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"11.5px", color:"#E1A36F", fontWeight:600 }}>{count}</span>
-            </div>
-            <div style={{ height:"5px", background:"rgba(255,255,255,0.07)", borderRadius:"100px" }}>
-              <div style={{ height:"100%", width:`${leave.length > 0 ? (count/leave.length)*100 : 0}%`, background:"#E1A36F", borderRadius:"100px" }}/>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function LogsSection({ logs }: { logs: LogEntry[] }) {
   const distribution = logs.reduce((acc,l)=>({...acc,[l.agent || "unknown"]:(acc[l.agent || "unknown"]||0)+1}),{} as Record<string,number>);
@@ -1008,7 +991,6 @@ export default function Home() {
             {activeNav==="tickets"   && <TicketsSection   user={user} tickets={ticketData} onChat={sendMessage}/>}
             {activeNav==="assets"    && <AssetsSection    user={user} assets={assetData} inventory={inventoryData} onChat={sendMessage}/>}
             {activeNav==="approvals" && <ApprovalsSection user={user} leave={leaveData} assets={assetData} tickets={ticketData} onChat={sendMessage}/>}
-            {activeNav==="analytics" && <AnalyticsSection leave={leaveData}/>}
             {activeNav==="logs"      && <LogsSection logs={logData}/>}
 
             {/* CHAT */}
@@ -1073,6 +1055,7 @@ export default function Home() {
     </>
   );
 }
+
 
 
 
