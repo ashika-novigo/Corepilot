@@ -8,6 +8,7 @@ from models.asset_request import AssetRequest
 from models.inventory import Inventory
 from models.employee import Employee
 from app.services.log_service import get_logs
+from app.services.leave_service import get_leave_balance
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 admin_router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -96,6 +97,19 @@ def dashboard_leaves(email: str, role: str, db: Session = Depends(get_db)):
     leaves = query.all()
 
     return [_leave_row(db, l) for l in leaves]
+
+
+@router.get("/leave-balance")
+def dashboard_leave_balance(email: str, role: str = "", db: Session = Depends(get_db)):
+    user = db.query(Employee).filter(Employee.email == email).first()
+    if not user:
+        return {
+            "sick": {"used": 0, "total": 0, "remaining": 0},
+            "casual": {"used": 0, "total": 0, "remaining": 0},
+            "earned": {"used": 0, "total": 0, "remaining": 0},
+        }
+
+    return get_leave_balance(db, user.id)
 
 
 @router.get("/tickets")

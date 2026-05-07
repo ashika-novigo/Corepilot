@@ -14,6 +14,18 @@ def _clean_json(raw: str) -> str:
 
 
 def route_query(message: str):
+    msg = (message or "").lower()
+    if re.search(
+        r"\b(confirm\s+)?(approve|reject)\s+leave\s+#?\d+\b|"
+        r"\bcancel\s+leave\s+#?\d+\b|"
+        r"\b(status|check).*\bleave\s+#?\d+\b|"
+        r"\bleave\s+#?\d+.*\bstatus\b|"
+        r"\bleave\s+(balance|history)\b|"
+        r"\bpending\s+(leaves|approvals)\b",
+        msg,
+    ):
+        return "hr"
+
     llm = get_llm()
 
     prompt = f"""

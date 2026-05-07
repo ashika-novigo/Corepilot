@@ -1,7 +1,8 @@
 import json
 import re
-from datetime import date
+
 from ai.groq_client import get_llm
+from app.services.date_service import get_today
 
 
 def _clean_json(raw: str) -> str:
@@ -17,20 +18,14 @@ def _clean_json(raw: str) -> str:
 
 def extract_hr_action(message: str, history: list = None):
     """
-    Use the LLM to extract intent and entities from the user message.
+    Use the LLM to extract HR intent and entities from the user message.
 
-    history — list of {"role": "user"|"assistant", "content": "..."} dicts
-              representing the current session.
-
-    Returns:
-        dict with keys:
-            action, leave_type, start_date, end_date, leave_id,
-            reason, needs_confirmation, confirmation_message, missing_info
+    history is a list of {"role": "user"|"assistant", "content": "..."} dicts
+    representing the current session.
     """
     llm = get_llm()
-    today = date.today().isoformat()
+    today = get_today().isoformat()
 
-    # Summarise conversation history for the prompt (last 10 turns)
     history_text = "(no prior turns)"
     if history:
         turns = []
@@ -55,42 +50,73 @@ Your job:
 - Understand the user's HR request, resolving any follow-up answers using history.
   Example: if the assistant previously asked "What type of leave?" and the user now
   says "sick", the action is apply_leave with leave_type=sick.
-- Convert relative dates to exact YYYY-MM-DD. Rules:
-    "tomorrow"                     → one day after {today}
-    "day after tomorrow"           → two days after {today}
-    "next monday"                  → next upcoming Monday from {today}
-    "for 3 days starting tomorrow" → start=tomorrow, end=3 calendar days later (inclusive)
-    Natural spelling mistakes are fine: "sik leave tomorow" = sick leave tomorrow.
+- Convert all natural language dates to YYYY-MM-DD using today's date as {today}.
+- Support flexible formats:
+  tomorrow, today, day after tomorrow, next Monday, this Friday,
+  2nd Jan 2026, Jan 2 2026, January 2nd 2026,
+  02/01/2026, 2026-01-02, from 2 Jan to 5 Jan,
+  for 3 days from tomorrow.
+- If the user gives an impossible date like 2027-02-31, set:
+  start_date = null,
+  end_date = null,
+  date_error = "Invalid date: 2027-02-31"
+- Natural spelling mistakes are fine: "sik leave tomorow" = sick leave tomorrow.
 
 Supported actions:
   apply_leave, leave_balance, leave_history, pending_leaves,
   pending_approvals, approve_leave, reject_leave, cancel_leave,
-  leave_status, policy_question
+  leave_status, leave_policy_question, leave_advice,
+  company_info, date_question, general_hr_question
 
-Return ONLY a single valid JSON object — no markdown fences, no prose.
+Return ONLY a single valid JSON object - no markdown fences, no prose.
 
 Schema:
 {{
-  "action": "<action>",
-  "leave_type": "casual | sick | earned | other | null",
-  "start_date": "YYYY-MM-DD or null",
-  "end_date": "YYYY-MM-DD or null",
-  "leave_id": <integer or null>,
-  "reason": "<string or null>",
-  "needs_confirmation": <true|false>,
-  "confirmation_message": "<string or null>",
-  "missing_info": ["fields still needed, e.g. start_date, leave_type, reason"]
+  "action": "...",
+  "leave_type": "casual|sick|earned|other|null",
+  "start_date": "YYYY-MM-DD|null",
+  "end_date": "YYYY-MM-DD|null",
+  "leave_id": number|null,
+  "reason": string|null,
+  "missing_info": [],
+  "date_error": string|null
 }}
 
 Rules:
+- Classify command and self-service intents before apply_leave.
+- Explicit examples:
+  * "confirm approve leave 24" = approve_leave, leave_id=24
+  * "approve leave 24" = approve_leave, leave_id=24
+  * "confirm reject leave 24" = reject_leave, leave_id=24
+  * "reject leave 24" = reject_leave, leave_id=24
+  * "cancel leave 24" = cancel_leave, leave_id=24
+  * "status of leave 24" = leave_status, leave_id=24
+  * "show my leave history" = leave_history
+  * "show my pending leaves" = pending_leaves
+  * "show pending approvals" = pending_approvals
+  * "show my leave balance" = leave_balance
+  * "what leave should I take if I am sick" = leave_advice
+  * "can I apply leave tomorrow" = leave_advice
+  * "what is sick leave policy" = leave_policy_question
+  * "what day is today" = date_question
+  * "who is the ceo" = company_info
+  * "what is organization name" = company_info
+  * "apply sick leave tomorrow for fever" = apply_leave
+  * "apply leave tomorrow" = apply_leave
+- Only return apply_leave when the user clearly wants to create, apply, or submit a leave request.
 - apply_leave: extract leave_type, start_date, end_date, reason.
   * Set missing fields to null and list them in missing_info.
-  * needs_confirmation = false (the agent layer handles the confirmation step).
-- Questions asking which leave type to use are policy_question, not apply_leave.
-  Example: "I am not feeling well, what leave should I put?" = policy_question.
-- approve_leave / reject_leave: always set needs_confirmation = true.
+- Informational or permission questions are leave_policy_question, general_hr_question, or leave_advice, not apply_leave.
+  Examples:
+  * "what kind of leave should I apply if I am sick?" = leave_advice
+  * "can I apply leave tomorrow?" = leave_advice
+  * "can I take sick leave?" = leave_advice
+  * "which leave can I apply?" = leave_advice
+- Questions asking which leave type to use are leave_advice, not apply_leave.
+  Example: "I am not feeling well, what leave should I put?" = leave_advice.
+- approve_leave / reject_leave: set the action and extract leave_id.
 - Single-day leave: start_date == end_date.
-- Unclear or non-HR intent: action = "policy_question", missing_info = [].
+- Unclear HR question: action = "general_hr_question", missing_info = [], date_error = null.
 - Output NOTHING outside the JSON object.
 """
 
@@ -103,8 +129,8 @@ Rules:
             data = json.loads(cleaned)
 
             return {
-                "action": data.get("action", "policy_question"),
-                "leave_type": data.get("leave_type") or "casual",
+                "action": data.get("action", "general_hr_question"),
+                "leave_type": data.get("leave_type"),
                 "start_date": data.get("start_date"),
                 "end_date": data.get("end_date"),
                 "leave_id": data.get("leave_id"),
@@ -112,6 +138,7 @@ Rules:
                 "needs_confirmation": bool(data.get("needs_confirmation", False)),
                 "confirmation_message": data.get("confirmation_message"),
                 "missing_info": data.get("missing_info") or [],
+                "date_error": data.get("date_error"),
             }
 
         except Exception as e:
@@ -120,8 +147,8 @@ Rules:
 
     print(f"[hr_ai_service] All attempts failed. Defaulting. Last error: {last_error}")
     return {
-        "action": "policy_question",
-        "leave_type": "other",
+        "action": "general_hr_question",
+        "leave_type": None,
         "start_date": None,
         "end_date": None,
         "leave_id": None,
@@ -129,4 +156,5 @@ Rules:
         "needs_confirmation": False,
         "confirmation_message": None,
         "missing_info": [],
+        "date_error": None,
     }

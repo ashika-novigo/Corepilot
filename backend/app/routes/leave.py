@@ -41,6 +41,8 @@ def apply_leave(leave: LeaveCreate, db: Session = Depends(get_db)):
                 "leaves remaining."
             ),
         )
+    if isinstance(new_leave, dict) and new_leave.get("status") == "non_working_days":
+        raise HTTPException(status_code=400, detail=new_leave["message"])
 
     return new_leave
 

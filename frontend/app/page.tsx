@@ -38,6 +38,8 @@ type AssetReq = {
 type InventoryItem = { id:number; item:string; total:number; available:number; reserved:number; };
 type LogEntry = { id:number; time:string; agent:string; action:string; user:string; status:string; };
 type DashboardSummary = Record<string, number>;
+type LeaveBalanceItem = { used:number; total:number; remaining:number; };
+type LeaveBalance = Record<"sick"|"casual"|"earned", LeaveBalanceItem>;
 type NavItem  = { id:string; icon:string; label:string; roles:string[]; };
 
 const NAV_ITEMS: NavItem[] = [
@@ -330,11 +332,23 @@ function AgentRouteBar() {
   );
 }
 
-function leaveUsageRows(leave: LvReq[]) {
+function leaveUsageRows(leave: LvReq[], balance?: LeaveBalance|null) {
+  if (balance) {
+    return (["sick","casual","earned"] as const).map((type, i) => ({
+      label: type.charAt(0).toUpperCase() + type.slice(1),
+      used: balance[type].used,
+      total: balance[type].total,
+      remaining: balance[type].remaining,
+      color: ["#6F9F9C", "#DEC484", "#E1A36F"][i],
+    }));
+  }
+
   const approved = leave.filter(l => l.status === "approved");
   return ["sick","casual","earned"].map((type, i) => ({
     label: type.charAt(0).toUpperCase() + type.slice(1),
     used: approved.filter(l => l.type?.toLowerCase() === type).reduce((sum, l) => sum + (l.days || 0), 0),
+    total: 0,
+    remaining: 0,
     color: ["#6F9F9C", "#DEC484", "#E1A36F"][i],
   }));
 }
@@ -343,14 +357,14 @@ function leaveUsageRows(leave: LvReq[]) {
 // SECTION VIEWS
 // ─────────────────────────────────────────────────────────────────
 
-function OverviewSection({ user, leave, tickets, assets, logs, summary, onChat }: {
-  user:User; leave:LvReq[]; tickets:Ticket[]; assets:AssetReq[]; logs:LogEntry[]; summary:DashboardSummary|null; onChat:(q:string)=>void;
+function OverviewSection({ user, leave, leaveBalance, tickets, assets, logs, summary, onChat }: {
+  user:User; leave:LvReq[]; leaveBalance:LeaveBalance|null; tickets:Ticket[]; assets:AssetReq[]; logs:LogEntry[]; summary:DashboardSummary|null; onChat:(q:string)=>void;
 }) {
   const role = user.role.toLowerCase();
   const pending_leave  = summary?.pending_leaves ?? leave.filter(l=>l.status==="pending").length;
   const open_tickets   = summary?.open_tickets ?? tickets.filter(t=>!["resolved","closed"].includes(t.status)).length;
   const pending_assets = summary?.pending_assets ?? assets.filter(a=>["pending","pending_it_approval"].includes(a.final_status || a.status || "")).length;
-  const usageRows = leaveUsageRows(leave);
+  const usageRows = leaveUsageRows(leave, leaveBalance);
 
   return (
     <div className="cp-slide-in">
@@ -382,10 +396,10 @@ function OverviewSection({ user, leave, tickets, assets, logs, summary, onChat }
               <div key={b.label} style={{ marginBottom:"12px" }}>
                 <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"5px" }}>
                   <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"11.5px", color:"rgba(226,216,165,0.8)" }}>{b.label}</span>
-                  <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"11.5px", color:b.color, fontWeight:600 }}>{b.used} used</span>
+                  <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"11.5px", color:b.color, fontWeight:600 }}>{b.remaining} left</span>
                 </div>
                 <div style={{ height:"5px", background:"rgba(255,255,255,0.08)", borderRadius:"100px", overflow:"hidden" }}>
-                  <div style={{ height:"100%", width:`${Math.min(b.used * 8, 100)}%`, background:b.color, borderRadius:"100px" }}/>
+                  <div style={{ height:"100%", width:`${b.total > 0 ? Math.min((b.used / b.total) * 100, 100) : 0}%`, background:b.color, borderRadius:"100px" }}/>
                 </div>
               </div>
             ))}
@@ -447,11 +461,11 @@ function OverviewSection({ user, leave, tickets, assets, logs, summary, onChat }
   );
 }
 
-function LeaveSection({ user, leave, onChat }: {
-  user:User; leave:LvReq[]; onChat:(q:string)=>void;
+function LeaveSection({ user, leave, leaveBalance, onChat }: {
+  user:User; leave:LvReq[]; leaveBalance:LeaveBalance|null; onChat:(q:string)=>void;
 }) {
   const role = user.role.toLowerCase();
-  const usageRows = leaveUsageRows(leave);
+  const usageRows = leaveUsageRows(leave, leaveBalance);
 
   function update(id:number, status:"approved"|"rejected") {
     onChat(`confirm ${status === "approved" ? "approve" : "reject"} leave ${id}`);
@@ -510,10 +524,10 @@ function LeaveSection({ user, leave, onChat }: {
               <div key={b.label} style={{ marginBottom:"14px" }}>
                 <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"5px" }}>
                   <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"12px", color:"rgba(226,216,165,0.8)" }}>{b.label}</span>
-                  <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"12px", color:b.color, fontWeight:600 }}>{b.used} used</span>
+                  <span style={{ fontFamily:"'Syne',sans-serif", fontSize:"12px", color:b.color, fontWeight:600 }}>{b.remaining} left</span>
                 </div>
                 <div style={{ height:"5px", background:"rgba(255,255,255,0.08)", borderRadius:"100px" }}>
-                  <div style={{ height:"100%", width:`${Math.min(b.used * 8, 100)}%`, background:b.color, borderRadius:"100px" }}/>
+                  <div style={{ height:"100%", width:`${b.total > 0 ? Math.min((b.used / b.total) * 100, 100) : 0}%`, background:b.color, borderRadius:"100px" }}/>
                 </div>
               </div>
             ))}
@@ -808,6 +822,7 @@ export default function Home() {
   const [inventoryData, setInventoryData] = useState<InventoryItem[]>([]);
   const [logData,       setLogData]       = useState<LogEntry[]>([]);
   const [summary,       setSummary]       = useState<DashboardSummary|null>(null);
+  const [leaveBalance,  setLeaveBalance]  = useState<LeaveBalance|null>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages]);
 
@@ -815,16 +830,18 @@ export default function Home() {
   async function fetchDashboardData(email: string, role: string) {
     const qs = `email=${encodeURIComponent(email)}&role=${encodeURIComponent(role)}`;
     try {
-      const [summaryRes, leaves, tickets, assets] = await Promise.all([
+      const [summaryRes, leaves, tickets, assets, balance] = await Promise.all([
         apiGet(`/dashboard/summary?${qs}`),
         apiGet(`/dashboard/leaves?${qs}`),
         apiGet(`/dashboard/tickets?${qs}`),
         apiGet(`/dashboard/assets?${qs}`),
+        apiGet(`/dashboard/leave-balance?${qs}`),
       ]);
       setSummary(summaryRes);
       setLeaveData(leaves);
       setTicketData(tickets);
       setAssetData(assets);
+      setLeaveBalance(balance);
 
       if (role === "it" || role === "admin") {
         setInventoryData(await apiGet(`/dashboard/inventory?${qs}`));
@@ -878,7 +895,7 @@ export default function Home() {
 
   function logout() {
     setUser(null); setToken("");
-    setLeaveData([]); setTicketData([]); setAssetData([]); setInventoryData([]); setLogData([]); setSummary(null);
+    setLeaveData([]); setTicketData([]); setAssetData([]); setInventoryData([]); setLogData([]); setSummary(null); setLeaveBalance(null);
     setMessages([{ role:"assistant", content:"Logged out. Please login again.", agent:"system" }]);
     setActiveNav("overview");
   }
@@ -986,8 +1003,8 @@ export default function Home() {
 
           {/* MAIN */}
           <div className="cp-scroll" style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
-            {activeNav==="overview"  && <OverviewSection  user={user} leave={leaveData} tickets={ticketData} assets={assetData} logs={logData} summary={summary} onChat={sendMessage}/>}
-            {activeNav==="leave"     && <LeaveSection     user={user} leave={leaveData} onChat={sendMessage}/>}
+            {activeNav==="overview"  && <OverviewSection  user={user} leave={leaveData} leaveBalance={leaveBalance} tickets={ticketData} assets={assetData} logs={logData} summary={summary} onChat={sendMessage}/>}
+            {activeNav==="leave"     && <LeaveSection     user={user} leave={leaveData} leaveBalance={leaveBalance} onChat={sendMessage}/>}
             {activeNav==="tickets"   && <TicketsSection   user={user} tickets={ticketData} onChat={sendMessage}/>}
             {activeNav==="assets"    && <AssetsSection    user={user} assets={assetData} inventory={inventoryData} onChat={sendMessage}/>}
             {activeNav==="approvals" && <ApprovalsSection user={user} leave={leaveData} assets={assetData} tickets={ticketData} onChat={sendMessage}/>}

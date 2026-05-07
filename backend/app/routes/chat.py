@@ -12,6 +12,9 @@ from app.services.auth_services import verify_password, create_access_token
 from ai.groq_client import get_llm
 from app.services.auth_services import decode_access_token
 from app.services.log_service import create_log, get_logs
+from app.config.company import CEO_NAME, COMPANY_NAME
+from app.rag.retriever import retrieve_docs
+from app.services.date_service import get_today, get_today_text, get_day_name, get_tomorrow
 
 from ai.agents.hr_agent import hr_agent
 from ai.graph import build_graph
@@ -55,11 +58,20 @@ class ChatResponse(BaseModel):
 
 def _general_prompt(session_state, message: str) -> str:
     history = session_state.history_text(limit=8)
+    today_text = get_today_text()
     return f"""
 You are Corepilot, an internal employee assistant.
 
 Use the conversation history for continuity. If the user asks for HR or IT
 operations, keep the answer brief and suggest the relevant request clearly.
+{today_text}.
+Company: {COMPANY_NAME}
+CEO: {CEO_NAME}
+
+Never invent company facts.
+If the answer is not in company documents, say "I could not find this in company documents."
+For company name and CEO, use the constants above.
+Do not mention any legacy or incorrect company names.
 
 Conversation history:
 {history}
@@ -67,6 +79,57 @@ Conversation history:
 Current message:
 {message}
 """
+
+
+def _company_or_date_answer(message: str) -> str | None:
+    msg = message.lower()
+    if "what day is today" in msg or "what is today" in msg or "today's date" in msg or "todays date" in msg:
+        return get_today_text()
+
+    if "who is ceo" in msg or "who is the ceo" in msg or "ceo" in msg:
+        return CEO_NAME
+
+    if "organization name" in msg or "organisation name" in msg or "company name" in msg:
+        return COMPANY_NAME
+
+    return None
+
+
+def _answer_general_question(session_state, message: str) -> str:
+    if answer := _company_or_date_answer(message):
+        return answer
+
+    docs = retrieve_docs(message)
+    if not docs:
+        return "I could not find this in company documents."
+
+    context = "\n\n---\n\n".join(docs)
+    history = session_state.history_text(limit=8)
+    tomorrow = get_tomorrow()
+    llm = get_llm()
+    prompt = f"""
+You are Corepilot, an internal assistant for {COMPANY_NAME}.
+
+Today is {get_day_name(get_today())}, {get_today().isoformat()}.
+Tomorrow is {get_day_name(tomorrow)}, {tomorrow.isoformat()}.
+CEO: {CEO_NAME}
+
+Answer using ONLY the company document context below and the company constants above.
+Never invent company facts.
+If the answer is not in the document context, say exactly:
+"I could not find this in company documents."
+Do not mention any legacy or incorrect company names.
+
+Conversation history:
+{history}
+
+Company document context:
+{context}
+
+User question:
+{message}
+"""
+    return llm.invoke(prompt).content.strip()
 
 
 def _is_contextual_follow_up(message: str) -> bool:
@@ -310,8 +373,14 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
     user_key = str(user.id)
     session_state = agent_state_store.get(user_key)
     history = session_state.history
+    direct_reply = _company_or_date_answer(req.message)
 
-    if session_state.get_pending("hr_leave"):
+    if direct_reply:
+        reply = direct_reply
+        session_state.set_agent("general")
+        session_state.metadata["last_tool"] = "company_date_facts"
+
+    elif session_state.get_pending("hr_leave"):
         reply = hr_agent(req.message, db, user, history, session_state=session_state)
 
     elif session_state.get_pending("it_action"):
@@ -344,9 +413,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
             reply = result["response"]
             session_state.set_agent(result.get("agent"))
         else:
-            llm = get_llm()
-            response = llm.invoke(_general_prompt(session_state, req.message))
-            reply = response.content
+            reply = _answer_general_question(session_state, req.message)
             session_state.set_agent("general")
 
     session_state.record_exchange(req.message, reply)

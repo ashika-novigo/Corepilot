@@ -4,6 +4,7 @@ from models.leave import LeaveRequest
 from models.ticket import Ticket
 from models.asset_request import AssetRequest
 from models.leave_balance import LeaveBalance
+from models.holiday import Holiday
 from models.system_log import SystemLog
 from fastapi.middleware.cors import CORSMiddleware
 from models.employee import Employee

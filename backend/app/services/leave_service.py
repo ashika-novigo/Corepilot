@@ -2,13 +2,14 @@ from datetime import date
 from models.employee import Employee
 from models.leave import LeaveRequest
 from models.leave_balance import LeaveBalance
+from app.services.calendar_service import calculate_working_days
 
 
 LEAVE_TYPES = ("sick", "casual", "earned")
 
 
-def calculate_total_days(start_date: date, end_date: date):
-    return (end_date - start_date).days + 1
+def calculate_working_leave_days(db, start_date: date, end_date: date):
+    return calculate_working_days(db, start_date, end_date)
 
 
 def _normalize_leave_type(leave_type: str | None) -> str:
@@ -59,7 +60,12 @@ def apply_leave(
     manager_email=None
 ):
     leave_type = _normalize_leave_type(leave_type)
-    total_days = calculate_total_days(start_date, end_date)
+    total_days = calculate_working_leave_days(db, start_date, end_date)
+    if total_days <= 0:
+        return {
+            "status": "non_working_days",
+            "message": "Selected date(s) are weekend/holiday. Leave is not required.",
+        }
     balance = get_or_create_leave_balance(db, employee_id)
     type_balance = _type_balance(balance, leave_type)
 
@@ -175,7 +181,7 @@ def get_pending_leaves_for_manager(db, manager_id):
         LeaveRequest.employee_id == Employee.id
     ).filter(LeaveRequest.status == "pending")
 
-    if manager and manager.role == "admin":
+    if manager and manager.role in ("admin", "hr"):
         return query.all()
 
     return query.filter(Employee.manager_id == manager_id).all()
