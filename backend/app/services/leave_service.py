@@ -3,6 +3,7 @@ from models.employee import Employee
 from models.leave import LeaveRequest
 from models.leave_balance import LeaveBalance
 from app.services.calendar_service import calculate_working_days
+from app.services.email_service import send_email
 
 
 LEAVE_TYPES = ("sick", "casual", "earned")
@@ -217,12 +218,32 @@ def approve_leave_by_manager(db, leave_id, manager_id):
         f"{leave_type}_used",
         getattr(balance, f"{leave_type}_used") + leave.total_days,
     )
+
     leave.status = "approved"
     db.commit()
     db.refresh(leave)
 
-    return leave
+    employee = db.query(Employee).filter(
+        Employee.id == leave.employee_id
+    ).first()
 
+    if employee:
+        send_email(
+            to="ashika.shridhar@novigosolutions.com", #to=employee.email,
+            subject="Leave Request Approved",
+            body=(
+                f"Hello {employee.name},\n\n"
+                f"Your leave request has been approved.\n\n"
+                f"Leave ID: #{leave.id}\n"
+                f"Type: {leave.leave_type}\n"
+                f"Dates: {leave.start_date} to {leave.end_date}\n"
+                f"Days: {leave.total_days}\n"
+                f"Status: {leave.status}\n\n"
+                f"Your leave balance has been updated."
+            )
+        )
+
+    return leave
 
 def reject_leave_by_manager(db, leave_id, manager_id):
     manager = db.query(Employee).filter(Employee.id == manager_id).first()
@@ -245,5 +266,25 @@ def reject_leave_by_manager(db, leave_id, manager_id):
     leave.status = "rejected"
     db.commit()
     db.refresh(leave)
+
+    employee = db.query(Employee).filter(
+        Employee.id == leave.employee_id
+    ).first()
+
+    if employee:
+        send_email(
+            to="ashika.shridhar@novigosolutions.com", #to=employee.email,
+            subject="Leave Request Rejected",
+            body=(
+                f"Hello {employee.name},\n\n"
+                f"Your leave request has been rejected.\n\n"
+                f"Leave ID: #{leave.id}\n"
+                f"Type: {leave.leave_type}\n"
+                f"Dates: {leave.start_date} to {leave.end_date}\n"
+                f"Days: {leave.total_days}\n"
+                f"Status: {leave.status}\n\n"
+                f"Please contact your manager for more details."
+            )
+        )
 
     return leave

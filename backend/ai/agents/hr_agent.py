@@ -1312,7 +1312,7 @@ def _apply_pending_leave(
     if manager:
         try:
             send_email(
-                to=manager.email,
+                to=manager.email, 
                 subject="Leave Approval Required",
                 body=(
                     f"Hello {manager.name},\n\n"

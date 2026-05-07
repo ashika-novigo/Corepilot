@@ -250,6 +250,37 @@ def _format_summary(db: Session) -> str:
 
 def _admin_command_response(message: str, db: Session, user: Employee, session_state) -> str | None:
     msg = message.lower().strip()
+    self_service_leave_terms = (
+        "my leave history",
+        "my pending leave",
+        "my pending leaves",
+        "own leave history",
+        "own pending leave",
+        "own pending leaves",
+    )
+
+    if any(term in msg for term in self_service_leave_terms):
+        return None
+
+    self_service_ticket_terms = (
+        "my ticket",
+        "my tickets",
+        "ticket status",
+    )
+
+    if user.role != "admin" and any(term in msg for term in self_service_ticket_terms):
+        return None
+
+    it_ticket_terms = (
+        "all tickets",
+        "ticket status",
+        "open tickets",
+        "pending tickets",
+    )
+
+    if user.role in ("it", "it_team") and any(term in msg for term in it_ticket_terms):
+        return None
+
     admin_terms = (
         "all employees",
         "employee profiles",
@@ -276,6 +307,16 @@ def _admin_command_response(message: str, db: Session, user: Employee, session_s
 
     if not any(term in msg for term in admin_terms):
         return None
+
+    if user.role in ("it", "it_team") and ("inventory" in msg or "low stock" in msg):
+        session_state.set_agent("it")
+        session_state.metadata["last_tool"] = "inventory_view"
+        session_state.metadata["last_status"] = "success"
+        if "low stock" in msg:
+            session_state.metadata["last_action"] = "it_view_low_stock"
+            return _format_inventory(db, low_stock=True)
+        session_state.metadata["last_action"] = "it_view_inventory"
+        return _format_inventory(db)
 
     if user.role != "admin":
         session_state.metadata["last_action"] = "access_denied"

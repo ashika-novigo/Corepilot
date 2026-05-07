@@ -90,9 +90,8 @@ def approve_asset_by_manager(db, request_id, manager_id):
 
 
 def reject_asset_by_manager(db, request_id, manager_id):
-    from models.employee import Employee
-
     manager = db.query(Employee).filter(Employee.id == manager_id).first()
+
     query = db.query(AssetRequest).join(
         Employee,
         AssetRequest.user_id == Employee.email
@@ -115,8 +114,25 @@ def reject_asset_by_manager(db, request_id, manager_id):
     db.commit()
     db.refresh(request)
 
-    return request
+    employee = db.query(Employee).filter(
+        Employee.email == request.user_id
+    ).first()
 
+    if employee:
+        send_email(
+            to="ashika.shridhar@novigosolutions.com", #to=employee.email,
+            subject="Asset Request Rejected",
+            body=(
+                f"Hello {employee.name},\n\n"
+                f"Your asset request has been rejected by your manager.\n\n"
+                f"Request ID: #{request.id}\n"
+                f"Asset: {request.asset_type}\n"
+                f"Final Status: {request.final_status}\n\n"
+                f"Please contact your manager for more details."
+            )
+        )
+
+    return request
 
 def get_pending_assets_for_it(db):
     return db.query(AssetRequest).filter(
@@ -170,7 +186,7 @@ def approve_asset_by_it(db, request_id):
 
     if employee:
         send_email(
-            to=employee.email,
+            to="ashika.shridhar@novigosolutions.com", #to=employee.email,
             subject="Asset Request Fulfilled",
             body=(
                 f"Hello {employee.name},\n\n"
@@ -200,7 +216,26 @@ def reject_asset_by_it(db, request_id):
     db.commit()
     db.refresh(request)
 
+    employee = db.query(Employee).filter(
+        Employee.email == request.user_id
+    ).first()
+
+    if employee:
+        send_email(
+            to="ashika.shridhar@novigosolutions.com", #to=employee.email,
+            subject="Asset Request Rejected by IT",
+            body=(
+                f"Hello {employee.name},\n\n"
+                f"Your asset request has been rejected by IT.\n\n"
+                f"Request ID: #{request.id}\n"
+                f"Asset: {request.asset_type}\n"
+                f"Final Status: {request.final_status}\n\n"
+                f"Please contact the IT team for more details."
+            )
+        )
+
     return request
+
 
 def get_all_asset_requests(db):
     return db.query(AssetRequest).all()

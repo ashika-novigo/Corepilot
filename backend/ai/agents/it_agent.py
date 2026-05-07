@@ -210,6 +210,9 @@ def _infer_it_details(message: str, user=None) -> dict[str, Any]:
         if "cancel" in msg:
             details["action_type"] = "cancel_asset_request"
             return details
+        if "my" in msg and ("status" in msg or "requests" in msg or "request" in msg or "pending" in msg or "approval" in msg):
+            details["action_type"] = "asset_status"
+            return details
         if "it approve" in msg:
             details["action_type"] = "it_approve_asset"
             return details
