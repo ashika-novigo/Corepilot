@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Iterable, Literal, TypedDict
-
-
 Role = Literal["user", "assistant", "system"]
 
 

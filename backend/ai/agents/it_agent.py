@@ -33,7 +33,7 @@ IT_ROLES = {"it", "it_team", "admin"}
 MANAGER_ROLES = {"manager", "admin"}
 VALID_ASSET_TYPES = ("laptop", "monitor", "keyboard", "mouse", "vpn token", "software license")
 CONFIRM_WORDS = {"confirm", "yes", "y", "ok", "okay", "sure", "proceed"}
-CANCEL_WORDS = {"cancel", "no", "nope", "stop", "abort"}
+CANCEL_WORDS = {"cancel", "no", "nope", "stop", "abort", "never mind"}
 PENDING_KEY = "it_action"
 
 
